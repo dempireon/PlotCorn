@@ -20,15 +20,19 @@ import UserProfileModal from '@/components/UserProfileModal';
 import EstadisticasPanel from '@/components/EstadisticasPanel';
 import { Coleccion } from '@/components/ColeccionesBar';
 import ProximosEstrenosBar from '@/components/ProximosEstrenosBar';
+import RecomendacionesParaTi from '@/components/RecomendacionesParaTi';
+import RuletaDecisionModal from '@/components/RuletaDecisionModal';
 import {
   Search, Star, Tv, Film, Check, Clock, Eye, Sparkles,
   User, LogOut, Bookmark, Users, Plus, Trash2, ChevronDown,
   Clapperboard, Flame, SlidersHorizontal, RotateCcw, FolderPlus,
-  Calendar, BarChart3, Folder, Library, Globe, Lock
+  Calendar, BarChart3, Folder, Library, Globe, Lock, Compass, ArrowUpDown,
+  Bell, Dices
 } from 'lucide-react';
 
 type EstadoMedia = 'watching' | 'completed' | 'watchlist';
 type TabBiblioteca = 'catalogo' | 'colecciones' | 'estrenos' | 'estadisticas';
+type OrdenBiblioteca = 'recientes' | 'nota' | 'alfabetico';
 
 interface ItemGuardado {
   tmdb_id: number;
@@ -52,6 +56,15 @@ export default function Home() {
   const [cargandoUsuario, setCargandoUsuario] = useState(true);
   const [vista, setVista] = useState<'explorar' | 'biblioteca' | 'comunidad'>('explorar');
 
+  // Filtros internos dentro de Mi Biblioteca
+  const [busquedaBiblio, setBusquedaBiblio] = useState('');
+  const [ordenBiblio, setOrdenBiblio] = useState<OrdenBiblioteca>('recientes');
+
+  // Notificación visual flotante (Toast), Ruleta y Campana social
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [mostrarRuleta, setMostrarRuleta] = useState(false);
+  const [notificacionesCount, setNotificacionesCount] = useState(0);
+
   // Estados para crear nueva colección directamente en su bloque
   const [nuevaColNombre, setNuevaColNombre] = useState('');
   const [nuevaColDesc, setNuevaColDesc] = useState('');
@@ -68,6 +81,13 @@ export default function Home() {
   const [miLista, setMiLista] = useState<Record<string, ItemGuardado>>({});
   const [colecciones, setColecciones] = useState<Coleccion[]>([]);
   const [cacheTitulos, setCacheTitulos] = useState<Record<string, { title: string; poster_path: string | null }>>({});
+
+  function mostrarToast(texto: string) {
+    setToastMsg(texto);
+    setTimeout(() => {
+      setToastMsg((prev) => (prev === texto ? null : prev));
+    }, 2800);
+  }
 
   useEffect(() => {
     cargarCatalogo('all', '', '');
@@ -87,6 +107,67 @@ export default function Home() {
 
     return () => listener.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mediaParam = params.get('media');
+    const userParam = params.get('user');
+
+    if (userParam) {
+      setPerfilActivoId(userParam);
+    } else if (mediaParam) {
+      const [tipoRaw, idRaw] = mediaParam.split('-');
+      const idNum = Number(idRaw);
+      if (idNum) {
+        const tipo = tipoRaw === 'movie' ? 'movie' : 'tv';
+        fetch(
+          `https://api.themoviedb.org/3/${tipo}/${idNum}?api_key=${process.env.NEXT_PUBLIC_TMDB_API_KEY}&language=es-ES`
+        )
+          .then((r) => r.json())
+          .then((d) => {
+            if (d?.id) {
+              setItemActivo({
+                id: d.id,
+                media_type: tipo,
+                name: d.title || d.name,
+                overview: d.overview || '',
+                poster_path: d.poster_path,
+                backdrop_path: d.backdrop_path,
+                first_air_date: d.release_date || d.first_air_date || '',
+                vote_average: d.vote_average || 0,
+              });
+            }
+          });
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setNotificacionesCount(0);
+      return;
+    }
+    cargarNotificacionesSociales();
+    const timer = setInterval(cargarNotificacionesSociales, 15000);
+    return () => clearInterval(timer);
+  }, [user?.id, vista]);
+
+  async function cargarNotificacionesSociales() {
+    if (!user) return;
+    const [{ count: solCount }, { count: msgCount }] = await Promise.all([
+      supabase
+        .from('friendships')
+        .select('*', { count: 'exact', head: true })
+        .eq('addressee_id', user.id)
+        .eq('status', 'pending'),
+      supabase
+        .from('direct_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('receiver_id', user.id)
+        .eq('read', false),
+    ]);
+    setNotificacionesCount((solCount || 0) + (msgCount || 0));
+  }
 
   async function comprobarSesion() {
     setCargandoUsuario(true);
@@ -110,7 +191,8 @@ export default function Home() {
     const { data: userSeries, error } = await supabase
       .from('user_series')
       .select('*')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false });
 
     const { data: colsData } = await supabase
       .from('user_collections')
@@ -226,6 +308,7 @@ export default function Home() {
           itemsKeys: [],
         },
       ]);
+      mostrarToast(`Colección "${data.name}" creada`);
       setNuevaColNombre('');
       setNuevaColDesc('');
       setNuevaColPublica(true);
@@ -237,6 +320,7 @@ export default function Home() {
     if (!user) return;
     setColecciones((prev) => prev.filter((c) => c.id !== id));
     await supabase.from('user_collections').delete().eq('id', id);
+    mostrarToast('Colección eliminada');
   }
 
   async function handleToggleVisibilidadColeccion(id: string, nuevoEstadoPublico: boolean) {
@@ -249,6 +333,7 @@ export default function Home() {
       .update({ is_public: nuevoEstadoPublico })
       .eq('id', id)
       .eq('user_id', user.id);
+    mostrarToast(nuevoEstadoPublico ? 'Colección ahora es pública' : 'Colección ahora es privada');
   }
 
   async function toggleItemEnColeccion(colId: string, item: MediaTMDB) {
@@ -278,6 +363,7 @@ export default function Home() {
         .eq('collection_id', colId)
         .eq('tmdb_id', item.id)
         .eq('media_type', item.media_type);
+      mostrarToast(`Quitado de "${col.name}"`);
     } else {
       await supabase.from('series_cache').upsert(
         {
@@ -299,6 +385,7 @@ export default function Home() {
         tmdb_id: item.id,
         media_type: item.media_type,
       });
+      mostrarToast(`Añadido a "${col.name}"`);
     }
   }
 
@@ -411,6 +498,16 @@ export default function Home() {
       },
     }));
 
+    const etiquetaEstado =
+      status === 'watching'
+        ? item.media_type === 'tv'
+          ? `Viendo (T${nuevaTemporada} E${nuevoEpisodio})`
+          : 'Viendo'
+        : status === 'completed'
+        ? 'Completado'
+        : 'Pendiente';
+    mostrarToast(`${item.name} · ${etiquetaEstado}${rating > 0 ? ` · ★${rating}` : ''}`);
+
     await supabase.from('profiles').upsert(
       {
         id: user.id,
@@ -463,6 +560,7 @@ export default function Home() {
       return copia;
     });
     setMenuAbierto(null);
+    mostrarToast(`"${item.name}" eliminado de tu lista`);
 
     await supabase
       .from('user_series')
@@ -481,6 +579,34 @@ export default function Home() {
     return true;
   };
 
+  const filtrarYOrdenarBiblio = (lista: ItemGuardado[]): MediaTMDB[] => {
+    const filtrada = lista.filter((i) => {
+      if (!cumpleFiltroTipo(i.media_type)) return false;
+      if (busquedaBiblio.trim()) {
+        return (i.title || '').toLowerCase().includes(busquedaBiblio.trim().toLowerCase());
+      }
+      return true;
+    });
+
+    const ordenada = [...filtrada];
+    if (ordenBiblio === 'nota') {
+      ordenada.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    } else if (ordenBiblio === 'alfabetico') {
+      ordenada.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'es'));
+    }
+
+    return ordenada.map((info) => ({
+      id: info.tmdb_id,
+      media_type: info.media_type,
+      name: info.title || 'Guardado',
+      overview: '',
+      poster_path: info.poster_path || null,
+      backdrop_path: null,
+      first_air_date: '',
+      vote_average: info.rating || 0,
+    }));
+  };
+
   const bloquesCatalogo: {
     key: EstadoMedia;
     titulo: string;
@@ -497,18 +623,7 @@ export default function Home() {
       icono: <Eye className="h-4 w-4 text-indigo-400" />,
       acentoBorder: 'border-indigo-500/30',
       acentoBadge: 'bg-indigo-500/20 text-indigo-300',
-      items: todosGuardados
-        .filter((i) => i.status === 'watching' && cumpleFiltroTipo(i.media_type))
-        .map((info) => ({
-          id: info.tmdb_id,
-          media_type: info.media_type,
-          name: info.title || 'Guardado',
-          overview: '',
-          poster_path: info.poster_path || null,
-          backdrop_path: null,
-          first_air_date: '',
-          vote_average: info.rating || 0,
-        })),
+      items: filtrarYOrdenarBiblio(todosGuardados.filter((i) => i.status === 'watching')),
     },
     {
       key: 'watchlist',
@@ -517,18 +632,7 @@ export default function Home() {
       icono: <Clock className="h-4 w-4 text-amber-400" />,
       acentoBorder: 'border-amber-500/30',
       acentoBadge: 'bg-amber-500/20 text-amber-300',
-      items: todosGuardados
-        .filter((i) => i.status === 'watchlist' && cumpleFiltroTipo(i.media_type))
-        .map((info) => ({
-          id: info.tmdb_id,
-          media_type: info.media_type,
-          name: info.title || 'Guardado',
-          overview: '',
-          poster_path: info.poster_path || null,
-          backdrop_path: null,
-          first_air_date: '',
-          vote_average: info.rating || 0,
-        })),
+      items: filtrarYOrdenarBiblio(todosGuardados.filter((i) => i.status === 'watchlist')),
     },
     {
       key: 'completed',
@@ -537,18 +641,7 @@ export default function Home() {
       icono: <Check className="h-4 w-4 text-emerald-400" />,
       acentoBorder: 'border-emerald-500/30',
       acentoBadge: 'bg-emerald-500/20 text-emerald-300',
-      items: todosGuardados
-        .filter((i) => i.status === 'completed' && cumpleFiltroTipo(i.media_type))
-        .map((info) => ({
-          id: info.tmdb_id,
-          media_type: info.media_type,
-          name: info.title || 'Guardado',
-          overview: '',
-          poster_path: info.poster_path || null,
-          backdrop_path: null,
-          first_air_date: '',
-          vote_average: info.rating || 0,
-        })),
+      items: filtrarYOrdenarBiblio(todosGuardados.filter((i) => i.status === 'completed')),
     },
   ];
 
@@ -595,7 +688,7 @@ export default function Home() {
 
   function renderGridTarjetas(lista: MediaTMDB[], prefijoKey: string = '') {
     return (
-      <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-6 md:grid-cols-4 lg:grid-cols-5">
         {lista.map((item) => {
           const clave = `${item.media_type}-${item.id}`;
           const claveMenu = `${prefijoKey}${clave}`;
@@ -897,10 +990,10 @@ export default function Home() {
   return (
     <div
       onClick={() => menuAbierto && setMenuAbierto(null)}
-      className="min-h-screen bg-slate-950 text-slate-100"
+      className="min-h-screen bg-slate-950 pb-20 text-slate-100 md:pb-8"
     >
       <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/85 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center justify-between">
             <div
               onClick={() => {
@@ -910,13 +1003,56 @@ export default function Home() {
               className="flex cursor-pointer items-center gap-2.5"
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/30">
-                <img src="/logoplotcorn.jpeg" alt="Logo" className="h-10 w-10 rounded-xl object-cover shadow-lg"
-/>
+                <img
+                  src="/logoplotcorn.jpeg"
+                  alt="Logo"
+                  className="h-10 w-10 rounded-xl object-cover shadow-lg"
+                />
               </div>
               <div>
                 <h1 className="text-xl font-bold tracking-tight text-white">PlotCorn</h1>
                 <p className="text-xs text-slate-400">Toda historia tiene un Twist</p>
               </div>
+            </div>
+
+            {/* Acceso cuenta y campana en cabecera móvil */}
+            <div className="flex items-center gap-2 md:hidden">
+              {user ? (
+                <>
+                  <button
+                    onClick={() => setVista('comunidad')}
+                    title="Solicitudes y mensajes"
+                    className="relative rounded-lg bg-slate-900 p-2 text-slate-300 transition hover:text-indigo-400"
+                  >
+                    <Bell className="h-4 w-4" />
+                    {notificacionesCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                        {notificacionesCount}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setPerfilActivoId(user.id)}
+                    className="rounded-full bg-indigo-600/20 px-3 py-1.5 text-xs font-bold text-indigo-300"
+                  >
+                    @{username || 'usuario'}
+                  </button>
+                  <button
+                    onClick={() => supabase.auth.signOut()}
+                    className="rounded-lg bg-slate-900 p-2 text-slate-400 hover:text-red-400"
+                  >
+                    <LogOut className="h-4 w-4" />
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowAuth(true)}
+                  className="flex items-center gap-1 rounded-full bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white"
+                >
+                  <User className="h-3.5 w-3.5" />
+                  Entrar
+                </button>
+              )}
             </div>
           </div>
 
@@ -931,7 +1067,8 @@ export default function Home() {
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Navegación escritorio */}
+          <div className="hidden items-center gap-2 md:flex">
             <button
               onClick={() => setVista('explorar')}
               className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
@@ -964,6 +1101,18 @@ export default function Home() {
             {user ? (
               <div className="flex items-center gap-2 border-l border-slate-800 pl-3">
                 <button
+                  onClick={() => setVista('comunidad')}
+                  title="Solicitudes y mensajes"
+                  className="relative rounded-lg bg-slate-900 p-2 text-slate-300 transition hover:text-indigo-400"
+                >
+                  <Bell className="h-4 w-4" />
+                  {notificacionesCount > 0 && (
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                      {notificacionesCount}
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={() => setPerfilActivoId(user.id)}
                   title="Ver y editar mi perfil"
                   className="text-xs font-medium text-indigo-400 hover:underline"
@@ -991,7 +1140,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
         {vista === 'comunidad' ? (
           <ComunidadFeed
             user={user}
@@ -1060,76 +1209,98 @@ export default function Home() {
             </div>
 
             {vista === 'explorar' && (
-              <>
-                <div className="mb-6 flex flex-wrap items-center gap-2.5 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3">
-                  <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-400">
-                    <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-400" />
-                    <span>Filtrar:</span>
+              <div className="space-y-8">
+                <div>
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-400">
+                        <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-400" />
+                        <span>Filtrar:</span>
+                      </div>
+
+                      <select
+                        value={plataformaId}
+                        onChange={(e) => cambiarPlataforma(e.target.value)}
+                        className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
+                          plataformaId
+                            ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        {PLATAFORMAS_ES.map((p) => (
+                          <option key={p.id} value={p.id} className="bg-slate-900 text-white">
+                            {p.nombre}
+                          </option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={generoId}
+                        onChange={(e) => cambiarGenero(e.target.value)}
+                        className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
+                          generoId
+                            ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
+                            : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        {GENEROS_ES.map((g) => (
+                          <option key={g.id} value={g.id} className="bg-slate-900 text-white">
+                            {g.nombre}
+                          </option>
+                        ))}
+                      </select>
+
+                      {hayFiltrosActivos && (
+                        <button
+                          onClick={limpiarFiltros}
+                          className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-red-500/40 hover:text-red-400"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Limpiar
+                        </button>
+                      )}
+                    </div>
+
+                    {user && totalBiblioteca > 0 && (
+                      <button
+                      onClick={() => setMostrarRuleta(true)}
+                      className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500"
+                    >
+                      <Dices className="h-3.5 w-3.5" />
+                      ¿Qué veo hoy?
+                    </button>
+                    )}
                   </div>
 
-                  <select
-                    value={plataformaId}
-                    onChange={(e) => cambiarPlataforma(e.target.value)}
-                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
-                      plataformaId
-                        ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    {PLATAFORMAS_ES.map((p) => (
-                      <option key={p.id} value={p.id} className="bg-slate-900 text-white">
-                        {p.nombre}
-                      </option>
-                    ))}
-                  </select>
-
-                  <select
-                    value={generoId}
-                    onChange={(e) => cambiarGenero(e.target.value)}
-                    className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
-                      generoId
-                        ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
-                        : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    {GENEROS_ES.map((g) => (
-                      <option key={g.id} value={g.id} className="bg-slate-900 text-white">
-                        {g.nombre}
-                      </option>
-                    ))}
-                  </select>
-
-                  {hayFiltrosActivos && (
-                    <button
-                      onClick={limpiarFiltros}
-                      className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-red-500/40 hover:text-red-400"
-                    >
-                      <RotateCcw className="h-3 w-3" />
-                      Limpiar
-                    </button>
+                  {loading ? (
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-6 md:grid-cols-4 lg:grid-cols-5">
+                      {[...Array(10)].map((_, i) => (
+                        <div key={i} className="aspect-[2/3] animate-pulse rounded-2xl bg-slate-900" />
+                      ))}
+                    </div>
+                  ) : items.length === 0 ? (
+                    <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
+                      <p className="text-slate-400">No hay resultados con esa combinación de filtros.</p>
+                      <button
+                        onClick={limpiarFiltros}
+                        className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
+                      >
+                        Restablecer filtros
+                      </button>
+                    </div>
+                  ) : (
+                    renderGridTarjetas(items, 'exp-')
                   )}
                 </div>
 
-                {loading ? (
-                  <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-                    {[...Array(10)].map((_, i) => (
-                      <div key={i} className="aspect-[2/3] animate-pulse rounded-2xl bg-slate-900" />
-                    ))}
-                  </div>
-                ) : items.length === 0 ? (
-                  <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
-                    <p className="text-slate-400">No hay resultados con esa combinación de filtros.</p>
-                    <button
-                      onClick={limpiarFiltros}
-                      className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
-                    >
-                      Restablecer filtros
-                    </button>
-                  </div>
-                ) : (
-                  renderGridTarjetas(items, 'exp-')
+                {user && !query.trim() && todosGuardados.length > 0 && (
+                  <RecomendacionesParaTi
+                    bibliotecaUsuario={todosGuardados}
+                    onSelectMedia={(media) => setItemActivo(media)}
+                    onQuickAdd={(media) => guardarEnNube(media, 'watchlist', 0)}
+                  />
                 )}
-              </>
+              </div>
             )}
 
             {/* VISTA MI BIBLIOTECA */}
@@ -1198,10 +1369,8 @@ export default function Home() {
                   />
                 )}
 
-                {/* BLOQUES APILADOS EN COLECCIONES */}
                 {tabBiblioteca === 'colecciones' && (
                   <div className="space-y-8">
-                    {/* Bloque superior para crear colección */}
                     <form
                       onSubmit={handleCrearColeccionSubmit}
                       className="flex flex-col gap-2.5 rounded-3xl border border-slate-800 bg-slate-900/50 p-4 sm:flex-row sm:items-center"
@@ -1355,20 +1524,66 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* BLOQUES APILADOS EN CATÁLOGO */}
                 {tabBiblioteca === 'catalogo' && (
-                  <>
+                  <div className="space-y-8">
+                    {totalBiblioteca > 0 && (
+                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="relative flex-1 sm:max-w-xs">
+                          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                          <input
+                            type="text"
+                            value={busquedaBiblio}
+                            onChange={(e) => setBusquedaBiblio(e.target.value)}
+                            placeholder="Filtrar en mi biblioteca..."
+                            className="w-full rounded-xl border border-slate-800 bg-slate-950 py-1.5 pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="flex items-center gap-1 text-xs text-slate-400">
+                            <ArrowUpDown className="h-3.5 w-3.5 text-indigo-400" />
+                            Ordenar:
+                          </span>
+                          <select
+                            value={ordenBiblio}
+                            onChange={(e) => setOrdenBiblio(e.target.value as OrdenBiblioteca)}
+                            className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-200 focus:border-indigo-500 focus:outline-none"
+                          >
+                            <option value="recientes">Últimos actualizados</option>
+                            <option value="nota">Mayor puntuación (★)</option>
+                            <option value="alfabetico">Alfabético (A–Z)</option>
+                          </select>
+
+                          <button
+                            onClick={() => setMostrarRuleta(true)}
+                            className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500"
+                          >
+                            <Dices className="h-3.5 w-3.5" />
+                            ¿Qué veo hoy?
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     {bloquesCatalogo.every((b) => b.items.length === 0) ? (
                       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
-                        <p className="text-slate-400">No hay títulos guardados en esta categoría.</p>
+                        <p className="text-slate-400">
+                          {busquedaBiblio
+                            ? `No hay coincidencias para "${busquedaBiblio}" en tu biblioteca.`
+                            : 'No hay títulos guardados en esta categoría.'}
+                        </p>
                         <button
                           onClick={() => {
-                            setVista('explorar');
-                            setFiltroTipo('all');
+                            if (busquedaBiblio) {
+                              setBusquedaBiblio('');
+                            } else {
+                              setVista('explorar');
+                              setFiltroTipo('all');
+                            }
                           }}
                           className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
                         >
-                          Explorar catálogo
+                          {busquedaBiblio ? 'Limpiar búsqueda' : 'Explorar catálogo'}
                         </button>
                       </div>
                     ) : (
@@ -1406,13 +1621,79 @@ export default function Home() {
                           ))}
                       </div>
                     )}
-                  </>
+
+                    {totalBiblioteca > 0 && (
+                      <RecomendacionesParaTi
+                        bibliotecaUsuario={todosGuardados}
+                        onSelectMedia={(media) => setItemActivo(media)}
+                        onQuickAdd={(media) => guardarEnNube(media, 'watchlist', 0)}
+                      />
+                    )}
+                  </div>
                 )}
               </>
             )}
           </>
         )}
       </main>
+
+      {/* Barra de navegación inferior fija para pantallas móviles */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-md md:hidden">
+        <button
+          onClick={() => setVista('explorar')}
+          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
+            vista === 'explorar' ? 'text-indigo-400' : 'text-slate-400'
+          }`}
+        >
+          <Compass className="h-5 w-5" />
+          <span>Explorar</span>
+        </button>
+
+        <button
+          onClick={() => setVista('comunidad')}
+          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
+            vista === 'comunidad' ? 'text-indigo-400' : 'text-slate-400'
+          }`}
+        >
+          <Users className="h-5 w-5" />
+          <span>Comunidad</span>
+        </button>
+
+        <button
+          onClick={() => (user ? setVista('biblioteca') : setShowAuth(true))}
+          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
+            vista === 'biblioteca' ? 'text-indigo-400' : 'text-slate-400'
+          }`}
+        >
+          <Bookmark className="h-5 w-5" />
+          <span>Biblioteca</span>
+        </button>
+
+        <button
+          onClick={() => (user ? setPerfilActivoId(user.id) : setShowAuth(true))}
+          className="flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold text-slate-400 transition hover:text-white"
+        >
+          <User className="h-5 w-5" />
+          <span>{user ? 'Perfil' : 'Entrar'}</span>
+        </button>
+      </nav>
+
+      {/* Notificación visual flotante (Toast) */}
+      {toastMsg && (
+        <div className="fixed bottom-20 right-4 z-50 flex items-center gap-2 rounded-2xl border border-indigo-500/40 bg-slate-900/95 px-4 py-2.5 text-xs font-semibold text-white shadow-2xl backdrop-blur-md md:bottom-6">
+          <Check className="h-4 w-4 text-emerald-400" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      {mostrarRuleta && (
+        <RuletaDecisionModal
+          itemsBiblioteca={todosGuardados}
+          onClose={() => setMostrarRuleta(false)}
+          onSelectMedia={(media) => setItemActivo(media)}
+          onMarcarViendo={(media) => guardarEnNube(media, 'watching', 0)}
+        />
+      )}
 
       {showAuth && (
         <AuthModal

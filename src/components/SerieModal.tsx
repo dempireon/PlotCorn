@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import {
   X, Star, Eye, Check, Clock, Play, Tv, Film,
-  Calendar, Sparkles, Users, MessageSquare, Send
+  Calendar, Sparkles, Users, MessageSquare, Send, Share2
 } from 'lucide-react';
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
@@ -43,6 +43,7 @@ export default function SerieModal({
   const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [mostrarTrailer, setMostrarTrailer] = useState(false);
   const [similares, setSimilares] = useState<MediaTMDB[]>([]);
+  const [copiadoEnlace, setCopiadoEnlace] = useState(false);
 
   // Gestión de temporadas y episodios (solo series)
   const [temporadaSeleccionada, setTemporadaSeleccionada] = useState<number>(
@@ -78,22 +79,36 @@ export default function SerieModal({
     }
   }, [temporadaSeleccionada, mediaActiva.id, esPeli]);
 
+  async function compartirFicha() {
+    const url = `${window.location.origin}/?media=${mediaActiva.media_type || 'tv'}-${mediaActiva.id}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `${titulo} en PlotCorn`,
+          text: `Mira ${titulo} en PlotCorn`,
+          url,
+        });
+        return;
+      } catch {}
+    }
+    await navigator.clipboard.writeText(url);
+    setCopiadoEnlace(true);
+    setTimeout(() => setCopiadoEnlace(false), 2500);
+  }
+
   async function cargarFichaCompleta() {
     setCargando(true);
     const tipo = mediaActiva.media_type || 'tv';
 
     try {
-      // 1. Detalles + créditos + vídeos + proveedores + recomendaciones en una sola llamada TMDB
       const res = await fetch(
         `https://api.themoviedb.org/3/${tipo}/${mediaActiva.id}?api_key=${TMDB_API_KEY}&language=es-ES&append_to_response=credits,videos,watch/providers,recommendations`
       );
       const data = await res.json();
       setDetalle(data);
 
-      // Reparto principal (top 12)
       setReparto((data.credits?.cast || []).slice(0, 12));
 
-      // Plataformas en España (ES)
       const provES = data['watch/providers']?.results?.ES;
       const flatrate = provES?.flatrate || [];
       const free = provES?.free || [];
@@ -104,7 +119,6 @@ export default function SerieModal({
       });
       setPlataformasES(Object.values(unicosMap));
 
-      // Tráiler en español o fallback en inglés
       let videos = data.videos?.results || [];
       if (videos.length === 0) {
         const resEn = await fetch(
@@ -118,7 +132,6 @@ export default function SerieModal({
         videos.find((v: any) => v.site === 'YouTube');
       setTrailerKey(trailer?.key || null);
 
-      // Recomendaciones similares
       const recs = (data.recommendations?.results || []).slice(0, 5).map((r: any) => ({
         id: r.id,
         media_type: (r.media_type || tipo) as MediaType,
@@ -131,7 +144,6 @@ export default function SerieModal({
       }));
       setSimilares(recs);
 
-      // Si es serie, cargar episodios vistos del usuario
       if (tipo === 'tv' && user) {
         const { data: vistos } = await supabase
           .from('watched_episodes')
@@ -151,7 +163,6 @@ export default function SerieModal({
         setEpisodiosVistosMap({});
       }
 
-      // Cargar reseñas / comentarios de la comunidad
       await cargarComentarios();
     } catch (err) {
       console.error('Error cargando ficha:', err);
@@ -209,7 +220,6 @@ export default function SerieModal({
         { onConflict: 'user_id,tmdb_id,season_number,episode_number' }
       );
 
-      // Actualizar progreso automático en biblioteca si está viendo
       onUpdateEstado(
         estadoActual?.status === 'completed' ? 'completed' : 'watching',
         estadoActual?.rating || 0,
@@ -309,7 +319,7 @@ export default function SerieModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 sm:p-5 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md sm:p-5"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -377,7 +387,6 @@ export default function SerieModal({
 
               <h2 className="text-2xl font-bold leading-tight text-white">{titulo}</h2>
 
-              {/* Géneros */}
               {detalle?.genres && detalle.genres.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {detalle.genres.map((g: any) => (
@@ -391,7 +400,7 @@ export default function SerieModal({
                 </div>
               )}
 
-              {/* Controles de estado, nota y botón Tráiler */}
+              {/* Controles de estado, nota, Tráiler y Compartir */}
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <button
                   onClick={() => onUpdateEstado('watching', estadoActual?.rating || 0)}
@@ -429,7 +438,6 @@ export default function SerieModal({
                   Pendiente
                 </button>
 
-                {/* Estrellas de puntuación */}
                 <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5">
                   {[1, 2, 3, 4, 5].map((num) => (
                     <button
@@ -450,7 +458,6 @@ export default function SerieModal({
                   ))}
                 </div>
 
-                {/* Botón Tráiler */}
                 {trailerKey && (
                   <button
                     onClick={() => setMostrarTrailer(!mostrarTrailer)}
@@ -460,6 +467,23 @@ export default function SerieModal({
                     {mostrarTrailer ? 'Ocultar tráiler' : 'Ver tráiler'}
                   </button>
                 )}
+
+                <button
+                  onClick={compartirFicha}
+                  className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-xs font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white"
+                >
+                  {copiadoEnlace ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                      ¡Enlace copiado!
+                    </>
+                  ) : (
+                    <>
+                      <Share2 className="h-3.5 w-3.5 text-indigo-400" />
+                      Compartir
+                    </>
+                  )}
+                </button>
               </div>
             </div>
           </div>
@@ -473,7 +497,6 @@ export default function SerieModal({
             </div>
           ) : (
             <>
-              {/* Reproductor de Tráiler incrustado */}
               {mostrarTrailer && trailerKey && (
                 <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black shadow-xl">
                   <div className="aspect-video w-full">
@@ -488,7 +511,6 @@ export default function SerieModal({
                 </div>
               )}
 
-              {/* Sinopsis + Plataformas en España */}
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                 <div className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 lg:col-span-2">
                   <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -533,7 +555,6 @@ export default function SerieModal({
                 </div>
               </div>
 
-              {/* Reparto Principal */}
               {reparto.length > 0 && (
                 <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                   <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -567,9 +588,8 @@ export default function SerieModal({
                 </section>
               )}
 
-              {/* Lista de Episodios por Temporada (solo series) */}
               {!esPeli && temporadasValidas.length > 0 && (
-                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 space-y-4">
+                <section className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Episodios por temporada
@@ -630,7 +650,6 @@ export default function SerieModal({
                             </div>
                           </div>
 
-                          {/* Nota rápida al episodio */}
                           <div className="flex shrink-0 items-center gap-0.5">
                             {[1, 2, 3, 4, 5].map((estrella) => (
                               <button
@@ -661,7 +680,6 @@ export default function SerieModal({
                 </section>
               )}
 
-              {/* Títulos similares / Recomendados */}
               {similares.length > 0 && (
                 <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                   <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -692,8 +710,7 @@ export default function SerieModal({
                 </section>
               )}
 
-              {/* Comentarios de la comunidad */}
-              <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 space-y-3">
+              <section className="space-y-3 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                 <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
                   <MessageSquare className="h-3.5 w-3.5 text-indigo-400" />
                   Opiniones de la comunidad ({comentarios.length})

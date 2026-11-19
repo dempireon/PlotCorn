@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
-import EstadisticasPanel from './EstadisticasPanel';
 import {
-  X, UserPlus, UserCheck, Star, Tv, Film, Users, Edit3, Save, Folder, Library, BarChart3
+  X, UserPlus, UserCheck, MessageSquare, Send,
+  Eye, Check, Clock, Star, Folder, Copy, Edit3, Save, Share2
 } from 'lucide-react';
 
 interface UserProfileModalProps {
@@ -24,142 +24,206 @@ export default function UserProfileModal({
   onRequireAuth,
 }: UserProfileModalProps) {
   const [perfil, setPerfil] = useState<any>(null);
-  const [biblioteca, setBiblioteca] = useState<any[]>([]);
-  const [coleccionesPub, setColeccionesPub] = useState<any[]>([]);
-  const [tabPerfil, setTabPerfil] = useState<'biblioteca' | 'colecciones' | 'estadisticas'>('biblioteca');
-  const [colSeleccionadaId, setColSeleccionadaId] = useState<string | null>(null);
-  const [filtroEstado, setFiltroEstado] = useState<'all' | 'watching' | 'completed' | 'watchlist'>('all');
+  const [bioEdit, setBioEdit] = useState('');
+  const [editandoBio, setEditandoBio] = useState(false);
+
+  const [seriesUsuario, setSeriesUsuario] = useState<any[]>([]);
+  const [coleccionesPublicas, setColeccionesPublicas] = useState<any[]>([]);
   const [seguidoresCount, setSeguidoresCount] = useState(0);
   const [siguiendoCount, setSiguiendoCount] = useState(0);
-  const [leSigo, setLeSigo] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loSigo, setLoSigo] = useState(false);
 
-  const [editandoBio, setEditandoBio] = useState(false);
-  const [bioTexto, setBioTexto] = useState('');
+  const [estadoAmistad, setEstadoAmistad] = useState<'none' | 'sent' | 'received' | 'friends'>('none');
+  const [friendshipId, setFriendshipId] = useState<string | null>(null);
 
-  const esMiPerfil = currentUser && currentUser.id === targetUserId;
+  const [tabPerfil, setTabPerfil] = useState<'biblioteca' | 'colecciones' | 'chat'>('biblioteca');
+
+  const [mensajes, setMensajes] = useState<any[]>([]);
+  const [nuevoMensaje, setNuevoMensaje] = useState('');
+  const [enviandoMsg, setEnviandoMsg] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const [cargando, setCargando] = useState(true);
+  const [clonandoColId, setClonandoColId] = useState<string | null>(null);
+  const [perfilCopiado, setPerfilCopiado] = useState(false);
+
+  const esMiPerfil = currentUser?.id === targetUserId;
 
   useEffect(() => {
-    cargarPerfilCompleto();
-  }, [targetUserId, currentUser]);
+    cargarTodoPerfil();
+  }, [targetUserId, currentUser?.id]);
 
-  async function cargarPerfilCompleto() {
-    setLoading(true);
+  useEffect(() => {
+    if (tabPerfil === 'chat' && currentUser && !esMiPerfil) {
+      cargarMensajes();
+      const intervalo = setInterval(cargarMensajes, 4000);
+      return () => clearInterval(intervalo);
+    }
+  }, [tabPerfil, targetUserId, currentUser?.id]);
 
-    const { data: prof } = await supabase
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [mensajes]);
+
+  async function compartirPerfil() {
+    const url = `${window.location.origin}/?user=${targetUserId}`;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Perfil de @${perfil?.username || 'usuario'} en PlotCorn`,
+          url,
+        });
+        return;
+      } catch {}
+    }
+    await navigator.clipboard.writeText(url);
+    setPerfilCopiado(true);
+    setTimeout(() => setPerfilCopiado(false), 2500);
+  }
+
+  async function cargarTodoPerfil() {
+    setCargando(true);
+
+    const { data: profData } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', targetUserId)
       .single();
 
-    if (prof) {
-      setPerfil(prof);
-      setBioTexto(prof.bio || '');
-    }
+    setPerfil(profData || { id: targetUserId, username: 'usuario', bio: '' });
+    setBioEdit(profData?.bio || '');
 
-    const { data: userSeries } = await supabase
+    const { data: uSeries } = await supabase
       .from('user_series')
       .select('*')
       .eq('user_id', targetUserId)
       .order('updated_at', { ascending: false });
 
+    const ids = Array.from(new Set((uSeries || []).map((u) => u.tmdb_id)));
+    const cacheMap: Record<string, { title: string; poster_path: string | null }> = {};
+    if (ids.length > 0) {
+      const { data: cData } = await supabase
+        .from('series_cache')
+        .select('*')
+        .in('tmdb_id', ids);
+      (cData || []).forEach((c: any) => {
+        cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = {
+          title: c.title,
+          poster_path: c.poster_path,
+        };
+      });
+    }
+
+    const combinados = (uSeries || []).map((u: any) => {
+      const clave = `${u.media_type || 'tv'}-${u.tmdb_id}`;
+      return {
+        ...u,
+        media_type: (u.media_type || 'tv') as MediaType,
+        title: cacheMap[clave]?.title || 'Título',
+        poster_path: cacheMap[clave]?.poster_path || null,
+      };
+    });
+    setSeriesUsuario(combinados);
+
     const { data: cols } = await supabase
       .from('user_collections')
       .select('*')
       .eq('user_id', targetUserId)
-      .order('created_at', { ascending: true });
+      .eq('is_public', true)
+      .order('created_at', { ascending: false });
 
-    let colItems: any[] = [];
     if (cols && cols.length > 0) {
-      const { data: ci } = await supabase
+      const colIds = cols.map((c) => c.id);
+      const { data: cItems } = await supabase
         .from('collection_items')
         .select('*')
-        .in('collection_id', cols.map((c) => c.id));
-      colItems = ci || [];
-    }
+        .in('collection_id', colIds);
 
-    const ids = Array.from(
-      new Set([
-        ...(userSeries || []).map((u) => u.tmdb_id),
-        ...colItems.map((ci) => ci.tmdb_id),
-      ])
-    );
-
-    const cMap: Record<string, any> = {};
-    if (ids.length > 0) {
-      const { data: cacheData } = await supabase
-        .from('series_cache')
-        .select('*')
-        .in('tmdb_id', ids);
-
-      (cacheData || []).forEach((c: any) => {
-        cMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
-      });
-    }
-
-    const colsListas = (cols || []).map((c: any) => ({
-      ...c,
-      items: colItems
-        .filter((ci) => ci.collection_id === c.id)
-        .map((ci) => {
-          const tipo = (ci.media_type || 'tv') as MediaType;
-          const info = cMap[`${tipo}-${ci.tmdb_id}`];
-          return {
-            tmdb_id: ci.tmdb_id,
-            media_type: tipo,
-            title: info?.title || 'Título',
-            poster_path: info?.poster_path || null,
-            status: 'watchlist',
-            rating: 0,
+      const itemIds = Array.from(new Set((cItems || []).map((ci) => ci.tmdb_id)));
+      if (itemIds.length > 0) {
+        const { data: cCache } = await supabase
+          .from('series_cache')
+          .select('*')
+          .in('tmdb_id', itemIds);
+        (cCache || []).forEach((c: any) => {
+          cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = {
+            title: c.title,
+            poster_path: c.poster_path,
           };
-        }),
-    }));
-    setColeccionesPub(colsListas);
-    if (colsListas.length > 0) setColSeleccionadaId(colsListas[0].id);
+        });
+      }
 
-    if (userSeries && userSeries.length > 0) {
-      const combinada = userSeries.map((item: any) => {
-        const tipo = (item.media_type || 'tv') as MediaType;
-        const infoCache = cMap[`${tipo}-${item.tmdb_id}`];
-        return {
-          ...item,
-          media_type: tipo,
-          title: infoCache?.title || 'Título',
-          poster_path: infoCache?.poster_path || null,
-        };
-      });
-      setBiblioteca(combinada);
+      setColeccionesPublicas(
+        cols.map((col: any) => ({
+          ...col,
+          items: (cItems || [])
+            .filter((ci) => ci.collection_id === col.id)
+            .map((ci) => {
+              const clave = `${ci.media_type || 'tv'}-${ci.tmdb_id}`;
+              return {
+                tmdb_id: ci.tmdb_id,
+                media_type: (ci.media_type || 'tv') as MediaType,
+                title: cacheMap[clave]?.title || 'Título',
+                poster_path: cacheMap[clave]?.poster_path || null,
+              };
+            }),
+        }))
+      );
     } else {
-      setBiblioteca([]);
+      setColeccionesPublicas([]);
     }
 
-    const [{ count: followers }, { count: following }] = await Promise.all([
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', targetUserId),
-      supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id', targetUserId),
-    ]);
+    const { count: segCount } = await supabase
+      .from('follows')
+      .select('*', { count: 'exact', head: true })
+      .eq('following_id', targetUserId);
+    setSeguidoresCount(segCount || 0);
 
-    setSeguidoresCount(followers || 0);
-    setSiguiendoCount(following || 0);
+    const { count: sigCount } = await supabase
+      .from('follows')
+      .select('*', { count: 'exact', head: true })
+      .eq('follower_id', targetUserId);
+    setSiguiendoCount(sigCount || 0);
 
     if (currentUser && !esMiPerfil) {
-      const { data: rel } = await supabase
+      const { data: followRow } = await supabase
         .from('follows')
         .select('*')
         .eq('follower_id', currentUser.id)
         .eq('following_id', targetUserId)
         .maybeSingle();
-      setLeSigo(!!rel);
+      setLoSigo(!!followRow);
+
+      const { data: friendRow } = await supabase
+        .from('friendships')
+        .select('*')
+        .or(
+          `and(requester_id.eq.${currentUser.id},addressee_id.eq.${targetUserId}),and(requester_id.eq.${targetUserId},addressee_id.eq.${currentUser.id})`
+        )
+        .maybeSingle();
+
+      if (!friendRow) {
+        setEstadoAmistad('none');
+        setFriendshipId(null);
+      } else {
+        setFriendshipId(friendRow.id);
+        if (friendRow.status === 'accepted') {
+          setEstadoAmistad('friends');
+        } else if (friendRow.requester_id === currentUser.id) {
+          setEstadoAmistad('sent');
+        } else {
+          setEstadoAmistad('received');
+        }
+      }
     }
 
-    setLoading(false);
+    setCargando(false);
   }
 
   async function toggleSeguir() {
     if (!currentUser) return onRequireAuth();
-    if (esMiPerfil) return;
-
-    if (leSigo) {
-      setLeSigo(false);
+    if (loSigo) {
+      setLoSigo(false);
       setSeguidoresCount((c) => Math.max(0, c - 1));
       await supabase
         .from('follows')
@@ -167,301 +231,540 @@ export default function UserProfileModal({
         .eq('follower_id', currentUser.id)
         .eq('following_id', targetUserId);
     } else {
-      setLeSigo(true);
+      setLoSigo(true);
       setSeguidoresCount((c) => c + 1);
+      await supabase.from('follows').insert({
+        follower_id: currentUser.id,
+        following_id: targetUserId,
+      });
+    }
+  }
+
+  async function gestionarAmistad() {
+    if (!currentUser) return onRequireAuth();
+
+    if (estadoAmistad === 'none') {
+      const { data } = await supabase
+        .from('friendships')
+        .insert({
+          requester_id: currentUser.id,
+          addressee_id: targetUserId,
+          status: 'pending',
+        })
+        .select()
+        .single();
+      if (data) {
+        setFriendshipId(data.id);
+        setEstadoAmistad('sent');
+      }
+    } else if (estadoAmistad === 'received' && friendshipId) {
       await supabase
-        .from('follows')
-        .insert({ follower_id: currentUser.id, following_id: targetUserId });
+        .from('friendships')
+        .update({ status: 'accepted', updated_at: new Date().toISOString() })
+        .eq('id', friendshipId);
+      setEstadoAmistad('friends');
+    } else if ((estadoAmistad === 'sent' || estadoAmistad === 'friends') && friendshipId) {
+      await supabase.from('friendships').delete().eq('id', friendshipId);
+      setFriendshipId(null);
+      setEstadoAmistad('none');
     }
   }
 
   async function guardarBio() {
-    if (!esMiPerfil) return;
+    if (!currentUser || !esMiPerfil) return;
     await supabase
       .from('profiles')
-      .update({ bio: bioTexto.trim() })
+      .update({ bio: bioEdit.trim() })
       .eq('id', currentUser.id);
-    setPerfil((prev: any) => ({ ...prev, bio: bioTexto.trim() }));
+    setPerfil((p: any) => ({ ...p, bio: bioEdit.trim() }));
     setEditandoBio(false);
   }
 
-  const colActiva = coleccionesPub.find((c) => c.id === colSeleccionadaId) || coleccionesPub[0];
+  async function cargarMensajes() {
+    if (!currentUser) return;
+    const { data } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .or(
+        `and(sender_id.eq.${currentUser.id},receiver_id.eq.${targetUserId}),and(sender_id.eq.${targetUserId},receiver_id.eq.${currentUser.id})`
+      )
+      .order('created_at', { ascending: true });
 
-  const listaFiltrada =
-    tabPerfil === 'colecciones'
-      ? colActiva?.items || []
-      : filtroEstado === 'all'
-      ? biblioteca
-      : biblioteca.filter((item) => item.status === filtroEstado);
+    setMensajes(data || []);
 
-  const stats = {
-    watching: biblioteca.filter((i) => i.status === 'watching').length,
-    completed: biblioteca.filter((i) => i.status === 'completed').length,
-    watchlist: biblioteca.filter((i) => i.status === 'watchlist').length,
-  };
+    await supabase
+      .from('direct_messages')
+      .update({ read: true })
+      .eq('sender_id', targetUserId)
+      .eq('receiver_id', currentUser.id)
+      .eq('read', false);
+  }
+
+  async function enviarMensaje(e: React.FormEvent) {
+    e.preventDefault();
+    if (!currentUser) return onRequireAuth();
+    if (!nuevoMensaje.trim() || enviandoMsg) return;
+
+    setEnviandoMsg(true);
+    const texto = nuevoMensaje.trim();
+    setNuevoMensaje('');
+
+    const { data } = await supabase
+      .from('direct_messages')
+      .insert({
+        sender_id: currentUser.id,
+        receiver_id: targetUserId,
+        content: texto,
+      })
+      .select()
+      .single();
+
+    if (data) {
+      setMensajes((prev) => [...prev, data]);
+    }
+    setEnviandoMsg(false);
+  }
+
+  async function clonarColeccion(col: any) {
+    if (!currentUser) return onRequireAuth();
+    setClonandoColId(col.id);
+
+    const { data: nuevaCol, error } = await supabase
+      .from('user_collections')
+      .insert({
+        user_id: currentUser.id,
+        name: `${col.name} (de @${perfil?.username || 'usuario'})`,
+        description: col.description || '',
+        is_public: false,
+      })
+      .select()
+      .single();
+
+    if (!error && nuevaCol && col.items.length > 0) {
+      await supabase.from('collection_items').insert(
+        col.items.map((it: any) => ({
+          collection_id: nuevaCol.id,
+          tmdb_id: it.tmdb_id,
+          media_type: it.media_type,
+        }))
+      );
+    }
+
+    setClonandoColId(null);
+    alert(`¡Colección "${col.name}" guardada en tu biblioteca!`);
+  }
+
+  const viendo = seriesUsuario.filter((s) => s.status === 'watching');
+  const completadas = seriesUsuario.filter((s) => s.status === 'completed');
+  const pendientes = seriesUsuario.filter((s) => s.status === 'watchlist');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md sm:p-6">
-      <div className="relative flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 shadow-2xl">
-        <button
-          onClick={onClose}
-          className="absolute right-4 top-4 z-10 rounded-full bg-slate-950/90 p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
-        >
-          <X className="h-5 w-5" />
-        </button>
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
+      >
+        {/* Cabecera del perfil */}
+        <div className="border-b border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/40 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-2xl font-bold uppercase text-white shadow-lg shadow-indigo-600/30">
+                {(perfil?.username || 'U')[0]}
+              </div>
 
-        <div className="overflow-y-auto p-6">
-          {loading ? (
-            <div className="space-y-4 py-12">
-              <div className="mx-auto h-20 w-20 animate-pulse rounded-full bg-slate-800" />
-              <div className="mx-auto h-6 w-48 animate-pulse rounded-lg bg-slate-800" />
-            </div>
-          ) : !perfil ? (
-            <p className="py-12 text-center text-slate-400">No se encontró este perfil.</p>
-          ) : (
-            <div className="space-y-5">
-              {/* Cabecera compacta del perfil */}
-              <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-950/70 p-5 sm:flex-row sm:items-center">
-                <div className="flex items-start gap-4">
-                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 to-purple-600 text-2xl font-bold text-white shadow-lg">
-                    {(perfil.username || 'U')[0].toUpperCase()}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-xl font-bold text-white">@{perfil.username}</h2>
-                      {esMiPerfil && (
-                        <span className="rounded-full bg-indigo-500/20 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-300">
-                          Tu perfil
-                        </span>
-                      )}
-                    </div>
-
-                    {editandoBio ? (
-                      <div className="flex items-center gap-2 pt-1">
-                        <input
-                          type="text"
-                          maxLength={140}
-                          value={bioTexto}
-                          onChange={(e) => setBioTexto(e.target.value)}
-                          placeholder="Escribe algo sobre tus gustos..."
-                          className="w-64 rounded-lg border border-slate-700 bg-slate-900 px-3 py-1 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                        />
-                        <button
-                          onClick={guardarBio}
-                          className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500"
-                        >
-                          <Save className="h-3 w-3" />
-                          Guardar
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <p className="text-xs text-slate-400">
-                          {perfil.bio || (esMiPerfil ? 'Añade una biografía corta...' : 'Sin biografía.')}
-                        </p>
-                        {esMiPerfil && (
-                          <button
-                            onClick={() => setEditandoBio(true)}
-                            className="text-slate-500 hover:text-indigo-400"
-                            title="Editar biografía"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-4 pt-1 text-xs text-slate-300">
-                      <span className="flex items-center gap-1">
-                        <Users className="h-3.5 w-3.5 text-indigo-400" />
-                        <strong className="text-white">{seguidoresCount}</strong> seguidores
-                      </span>
-                      <span>
-                        <strong className="text-white">{siguiendoCount}</strong> siguiendo
-                      </span>
-                    </div>
-                  </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-xl font-bold text-white">@{perfil?.username || 'usuario'}</h2>
+                  {estadoAmistad === 'friends' && (
+                    <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[11px] font-bold text-emerald-300">
+                      Amigos
+                    </span>
+                  )}
                 </div>
 
-                {!esMiPerfil && (
+                {esMiPerfil && editandoBio ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <input
+                      type="text"
+                      maxLength={140}
+                      value={bioEdit}
+                      onChange={(e) => setBioEdit(e.target.value)}
+                      placeholder="Escribe algo sobre tus gustos..."
+                      className="w-64 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                    <button
+                      onClick={guardarBio}
+                      className="flex items-center gap-1 rounded-xl bg-indigo-600 px-3 py-1 text-xs font-bold text-white hover:bg-indigo-500"
+                    >
+                      <Save className="h-3 w-3" /> Guardar
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-1 flex items-center gap-2">
+                    <p className="text-xs text-slate-400">
+                      {perfil?.bio || (esMiPerfil ? 'Sin biografía aún.' : 'Amante de las series y el cine.')}
+                    </p>
+                    {esMiPerfil && (
+                      <button
+                        onClick={() => setEditandoBio(true)}
+                        className="text-slate-500 hover:text-indigo-400"
+                        title="Editar biografía"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <div className="mt-2.5 flex flex-wrap gap-4 text-xs text-slate-400">
+                  <span>
+                    <strong className="text-white">{seriesUsuario.length}</strong> títulos
+                  </span>
+                  <span>
+                    <strong className="text-white">{seguidoresCount}</strong> seguidores
+                  </span>
+                  <span>
+                    <strong className="text-white">{siguiendoCount}</strong> siguiendo
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!esMiPerfil && (
+                <>
                   <button
                     onClick={toggleSeguir}
-                    className={`flex items-center justify-center gap-2 rounded-xl px-5 py-2.5 text-xs font-bold transition ${
-                      leSigo
-                        ? 'border border-slate-700 bg-slate-800 text-slate-200 hover:border-red-500/50 hover:text-red-400'
-                        : 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 hover:bg-indigo-500'
+                    className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-bold transition ${
+                      loSigo
+                        ? 'border border-slate-700 bg-slate-900 text-slate-200 hover:border-red-500/40 hover:text-red-400'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-500'
                     }`}
                   >
-                    {leSigo ? (
+                    {loSigo ? <UserCheck className="h-3.5 w-3.5" /> : <UserPlus className="h-3.5 w-3.5" />}
+                    {loSigo ? 'Siguiendo' : 'Seguir'}
+                  </button>
+
+                  <button
+                    onClick={gestionarAmistad}
+                    className={`flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
+                      estadoAmistad === 'friends'
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:border-red-500/40 hover:text-red-400'
+                        : estadoAmistad === 'received'
+                        ? 'border-amber-500/50 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                        : estadoAmistad === 'sent'
+                        ? 'border-slate-700 bg-slate-900 text-slate-400'
+                        : 'border-slate-700 bg-slate-900 text-white hover:border-indigo-500'
+                    }`}
+                  >
+                    {estadoAmistad === 'friends' && (
                       <>
-                        <UserCheck className="h-4 w-4" />
-                        Siguiendo
+                        <UserCheck className="h-3.5 w-3.5" /> Amigos
                       </>
-                    ) : (
+                    )}
+                    {estadoAmistad === 'received' && (
                       <>
-                        <UserPlus className="h-4 w-4" />
-                        Seguir usuario
+                        <UserPlus className="h-3.5 w-3.5" /> Aceptar solicitud
+                      </>
+                    )}
+                    {estadoAmistad === 'sent' && (
+                      <>
+                        <Clock className="h-3.5 w-3.5" /> Solicitud enviada
+                      </>
+                    )}
+                    {estadoAmistad === 'none' && (
+                      <>
+                        <UserPlus className="h-3.5 w-3.5" /> Añadir amigo
                       </>
                     )}
                   </button>
+
+                  <button
+                    onClick={() => {
+                      if (!currentUser) return onRequireAuth();
+                      setTabPerfil('chat');
+                    }}
+                    className="flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3.5 py-2 text-xs font-bold text-indigo-300 transition hover:bg-indigo-500/25"
+                  >
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    Mensaje
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={compartirPerfil}
+                className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white"
+                title="Copiar enlace al perfil"
+              >
+                {perfilCopiado ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    Copiado
+                  </>
+                ) : (
+                  <>
+                    <Share2 className="h-3.5 w-3.5 text-indigo-400" />
+                    Compartir
+                  </>
                 )}
-              </div>
+              </button>
 
-              {/* PESTAÑAS PRINCIPALES DEL PERFIL */}
-              <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
-                <button
-                  onClick={() => setTabPerfil('biblioteca')}
-                  className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
-                    tabPerfil === 'biblioteca'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-950 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Library className="h-3.5 w-3.5" />
-                  Biblioteca ({biblioteca.length})
-                </button>
+              <button
+                onClick={onClose}
+                className="rounded-xl bg-slate-900 p-2 text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
 
-                <button
-                  onClick={() => setTabPerfil('colecciones')}
-                  className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
-                    tabPerfil === 'colecciones'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-950 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <Folder className="h-3.5 w-3.5" />
-                  Colecciones ({coleccionesPub.length})
-                </button>
+          <div className="mt-5 flex gap-2">
+            <button
+              onClick={() => setTabPerfil('biblioteca')}
+              className={`rounded-xl px-4 py-1.5 text-xs font-semibold transition ${
+                tabPerfil === 'biblioteca'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-950/70 text-slate-400 hover:text-white'
+              }`}
+            >
+              Biblioteca ({seriesUsuario.length})
+            </button>
+            <button
+              onClick={() => setTabPerfil('colecciones')}
+              className={`rounded-xl px-4 py-1.5 text-xs font-semibold transition ${
+                tabPerfil === 'colecciones'
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-950/70 text-slate-400 hover:text-white'
+              }`}
+            >
+              Colecciones ({coleccionesPublicas.length})
+            </button>
+            {!esMiPerfil && (
+              <button
+                onClick={() => {
+                  if (!currentUser) return onRequireAuth();
+                  setTabPerfil('chat');
+                }}
+                className={`flex items-center gap-1.5 rounded-xl px-4 py-1.5 text-xs font-semibold transition ${
+                  tabPerfil === 'chat'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-950/70 text-slate-400 hover:text-white'
+                }`}
+              >
+                <MessageSquare className="h-3.5 w-3.5" />
+                Chat privado
+              </button>
+            )}
+          </div>
+        </div>
 
-                <button
-                  onClick={() => setTabPerfil('estadisticas')}
-                  className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
-                    tabPerfil === 'estadisticas'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-950 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <BarChart3 className="h-3.5 w-3.5" />
-                  Estadísticas
-                </button>
-              </div>
-
-              {/* CONTENIDO SEGÚN PESTAÑA DEL PERFIL */}
-              {tabPerfil === 'estadisticas' ? (
-                <EstadisticasPanel userId={targetUserId} itemsBiblioteca={biblioteca} />
-              ) : (
-                <>
-                  {tabPerfil === 'colecciones' && (
-                    coleccionesPub.length === 0 ? (
-                      <p className="py-10 text-center text-xs text-slate-500">
-                        Este usuario no tiene colecciones públicas.
-                      </p>
-                    ) : (
-                      <div className="flex flex-wrap gap-2">
-                        {coleccionesPub.map((col) => {
-                          const activa = colActiva?.id === col.id;
-                          return (
-                            <button
-                              key={col.id}
-                              onClick={() => setColSeleccionadaId(col.id)}
-                              className={`rounded-xl border px-3.5 py-1.5 text-xs font-semibold transition ${
-                                activa
-                                  ? 'border-indigo-500 bg-indigo-600 text-white'
-                                  : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
-                              }`}
-                            >
-                              {col.name} ({col.items.length})
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )
-                  )}
-
-                  {tabPerfil === 'biblioteca' && (
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        { key: 'all', label: `Todo (${biblioteca.length})` },
-                        { key: 'watching', label: `Viendo (${stats.watching})` },
-                        { key: 'completed', label: `Terminadas (${stats.completed})` },
-                        { key: 'watchlist', label: `Pendientes (${stats.watchlist})` },
-                      ].map((f) => (
-                        <button
-                          key={f.key}
-                          onClick={() => setFiltroEstado(f.key as any)}
-                          className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-                            filtroEstado === f.key
-                              ? 'bg-slate-200 text-slate-950'
-                              : 'bg-slate-950 text-slate-400 hover:text-white'
+        <div className="flex-1 overflow-y-auto p-6">
+          {cargando ? (
+            <div className="py-12 text-center text-sm text-slate-400">Cargando perfil...</div>
+          ) : tabPerfil === 'chat' && !esMiPerfil ? (
+            <div className="flex h-[50vh] flex-col justify-between rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
+              <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+                {mensajes.length === 0 ? (
+                  <p className="py-16 text-center text-xs text-slate-500">
+                    Inicia la conversación con @{perfil?.username}. ¡Recomiéndale una serie!
+                  </p>
+                ) : (
+                  mensajes.map((m) => {
+                    const mio = m.sender_id === currentUser?.id;
+                    return (
+                      <div
+                        key={m.id}
+                        className={`flex flex-col ${mio ? 'items-end' : 'items-start'}`}
+                      >
+                        <div
+                          className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-xs ${
+                            mio
+                              ? 'bg-indigo-600 text-white'
+                              : 'border border-slate-800 bg-slate-950 text-slate-200'
                           }`}
                         >
-                          {f.label}
+                          {m.content}
+                        </div>
+                        <span className="mt-1 text-[10px] text-slate-500">
+                          {new Date(m.created_at).toLocaleTimeString('es-ES', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <form onSubmit={enviarMensaje} className="mt-3 flex gap-2 border-t border-slate-800 pt-3">
+                <input
+                  type="text"
+                  value={nuevoMensaje}
+                  onChange={(e) => setNuevoMensaje(e.target.value)}
+                  placeholder={`Escribe un mensaje a @${perfil?.username}...`}
+                  className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={!nuevoMensaje.trim() || enviandoMsg}
+                  className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  Enviar
+                </button>
+              </form>
+            </div>
+          ) : tabPerfil === 'colecciones' ? (
+            <div className="space-y-6">
+              {coleccionesPublicas.length === 0 ? (
+                <p className="py-12 text-center text-sm text-slate-400">
+                  Este usuario aún no tiene colecciones públicas.
+                </p>
+              ) : (
+                coleccionesPublicas.map((col) => (
+                  <section
+                    key={col.id}
+                    className="rounded-3xl border border-indigo-500/30 bg-slate-900/45 p-5"
+                  >
+                    <div className="mb-4 flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <Folder className="h-4 w-4 text-indigo-400" />
+                        <div>
+                          <h4 className="text-sm font-bold text-white">{col.name}</h4>
+                          {col.description && (
+                            <p className="text-xs text-slate-400">{col.description}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      {!esMiPerfil && (
+                        <button
+                          onClick={() => clonarColeccion(col)}
+                          disabled={clonandoColId === col.id}
+                          className="flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-600/20 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-600/30"
+                        >
+                          <Copy className="h-3.5 w-3.5" />
+                          {clonandoColId === col.id ? 'Guardando...' : 'Guardar en mi biblioteca'}
                         </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 sm:grid-cols-5">
+                      {col.items.map((it: any) => (
+                        <div
+                          key={`${it.media_type}-${it.tmdb_id}`}
+                          onClick={() => {
+                            onClose();
+                            onSelectMedia({
+                              id: it.tmdb_id,
+                              media_type: it.media_type,
+                              name: it.title,
+                              overview: '',
+                              poster_path: it.poster_path,
+                              backdrop_path: null,
+                              first_air_date: '',
+                              vote_average: 0,
+                            });
+                          }}
+                          className="cursor-pointer space-y-1.5"
+                        >
+                          <img
+                            src={getPosterUrl(it.poster_path)}
+                            alt={it.title}
+                            className="aspect-[2/3] w-full rounded-xl object-cover hover:opacity-85"
+                          />
+                          <p className="truncate text-xs font-medium text-slate-200">{it.title}</p>
+                        </div>
                       ))}
                     </div>
-                  )}
+                  </section>
+                ))
+              )}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {seriesUsuario.length === 0 ? (
+                <p className="py-12 text-center text-sm text-slate-400">
+                  Su biblioteca está vacía por ahora.
+                </p>
+              ) : (
+                [
+                  {
+                    titulo: 'Viendo ahora',
+                    icono: <Eye className="h-4 w-4 text-indigo-400" />,
+                    border: 'border-indigo-500/30',
+                    lista: viendo,
+                  },
+                  {
+                    titulo: 'Terminadas y Vistas',
+                    icono: <Check className="h-4 w-4 text-emerald-400" />,
+                    border: 'border-emerald-500/30',
+                    lista: completadas,
+                  },
+                  {
+                    titulo: 'Pendientes',
+                    icono: <Clock className="h-4 w-4 text-amber-400" />,
+                    border: 'border-amber-500/30',
+                    lista: pendientes,
+                  },
+                ]
+                  .filter((b) => b.lista.length > 0)
+                  .map((bloque) => (
+                    <section
+                      key={bloque.titulo}
+                      className={`rounded-3xl border ${bloque.border} bg-slate-900/45 p-4`}
+                    >
+                      <div className="mb-3 flex items-center gap-2 border-b border-slate-800 pb-2.5">
+                        {bloque.icono}
+                        <h4 className="text-sm font-bold text-white">
+                          {bloque.titulo} ({bloque.lista.length})
+                        </h4>
+                      </div>
 
-                  {/* Cuadrícula */}
-                  {listaFiltrada.length === 0 ? (
-                    <p className="py-10 text-center text-xs text-slate-500">
-                      No hay títulos en esta categoría.
-                    </p>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 md:grid-cols-5">
-                      {listaFiltrada.map((item: any) => {
-                        const esPeli = item.media_type === 'movie';
-                        return (
+                      <div className="grid grid-cols-3 gap-3 sm:grid-cols-5">
+                        {bloque.lista.map((it) => (
                           <div
-                            key={`${item.media_type}-${item.tmdb_id}`}
+                            key={`${it.media_type}-${it.tmdb_id}`}
                             onClick={() => {
                               onClose();
                               onSelectMedia({
-                                id: item.tmdb_id,
-                                media_type: item.media_type,
-                                name: item.title,
+                                id: it.tmdb_id,
+                                media_type: it.media_type,
+                                name: it.title,
                                 overview: '',
-                                poster_path: item.poster_path,
+                                poster_path: it.poster_path,
                                 backdrop_path: null,
                                 first_air_date: '',
-                                vote_average: item.rating || 0,
+                                vote_average: it.rating || 0,
                               });
                             }}
-                            className="group cursor-pointer space-y-1.5"
+                            className="cursor-pointer space-y-1"
                           >
-                            <div className="relative aspect-[2/3] overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+                            <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-slate-900">
                               <img
-                                src={getPosterUrl(item.poster_path, 'w342')}
-                                alt={item.title}
-                                className="h-full w-full object-cover transition group-hover:scale-105"
+                                src={getPosterUrl(it.poster_path)}
+                                alt={it.title}
+                                className="h-full w-full object-cover transition hover:scale-105"
                               />
-                              <div className="absolute left-1.5 top-1.5 rounded-full bg-slate-950/85 px-2 py-0.5 text-[10px] font-bold text-slate-200">
-                                {esPeli ? <Film className="inline h-2.5 w-2.5" /> : <Tv className="inline h-2.5 w-2.5" />}
-                              </div>
-                              {item.rating > 0 && (
-                                <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-full bg-slate-950/85 px-1.5 py-0.5 text-[10px] font-bold text-amber-400">
+                              {it.rating > 0 && (
+                                <span className="absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-full bg-slate-950/85 px-1.5 py-0.5 text-[10px] font-bold text-amber-400">
                                   <Star className="h-2.5 w-2.5 fill-amber-400" />
-                                  {item.rating}
-                                </div>
+                                  {it.rating}
+                                </span>
                               )}
                             </div>
-                            <p className="line-clamp-1 text-xs font-semibold text-slate-200 group-hover:text-indigo-400">
-                              {item.title}
-                            </p>
-                            {tabPerfil === 'biblioteca' && (
-                              <p className="text-[11px] text-slate-500">
-                                {item.status === 'watching' &&
-                                  (esPeli ? 'Viendo' : `Viendo · T${item.current_season || 1} E${item.current_episode || 1}`)}
-                                {item.status === 'completed' && (esPeli ? 'Vista' : 'Terminada')}
-                                {item.status === 'watchlist' && 'Pendiente'}
-                              </p>
-                            )}
+                            <p className="truncate text-xs font-medium text-slate-200">{it.title}</p>
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </>
+                        ))}
+                      </div>
+                    </section>
+                  ))
               )}
             </div>
           )}
