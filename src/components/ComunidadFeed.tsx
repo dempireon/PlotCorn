@@ -2,15 +2,15 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
+import { getPosterUrl } from '@/lib/tmdb';
 import {
-  Users, UserPlus, UserCheck, Star, Eye, Check, Clock,
-  Sparkles, Tv, Film, Search
+  Users, UserPlus, Check, X, MessageSquare,
+  Search, Star, Flame
 } from 'lucide-react';
 
 interface ComunidadFeedProps {
   user: any;
-  onSelectSerie: (serie: MediaTMDB) => void;
+  onSelectSerie: (serie: any) => void;
   onSelectUser: (userId: string) => void;
   onRequireAuth: () => void;
 }
@@ -22,353 +22,417 @@ export default function ComunidadFeed({
   onRequireAuth,
 }: ComunidadFeedProps) {
   const [actividad, setActividad] = useState<any[]>([]);
-  const [seguidos, setSeguidos] = useState<string[]>([]);
-  const [filtro, setFiltro] = useState<'todos' | 'seguidos'>('todos');
-  const [loading, setLoading] = useState(true);
-
-  // Buscador de amigos
+  const [usuariosBusqueda, setUsuariosBusqueda] = useState<any[]>([]);
   const [busquedaUser, setBusquedaUser] = useState('');
-  const [resultadosUsers, setResultadosUsers] = useState<any[]>([]);
-  const [buscandoUsers, setBuscandoUsers] = useState(false);
+
+  const [solicitudesEntrantes, setSolicitudesEntrantes] = useState<any[]>([]);
+  const [amigos, setAmigos] = useState<any[]>([]);
+  const [mensajesNoLeidos, setMensajesNoLeidos] = useState<Record<string, number>>({});
+  const [cargando, setCargando] = useState(true);
 
   useEffect(() => {
     cargarComunidad();
-  }, [user]);
+  }, [user?.id]);
 
   async function cargarComunidad() {
-    setLoading(true);
+    setCargando(true);
 
-    // 1. Última actividad global
-    const { data: feed } = await supabase
+    // 1. Actividad reciente global
+    const { data: acts } = await supabase
       .from('user_series')
-      .select('id, user_id, tmdb_id, media_type, status, rating, updated_at, profiles (username)')
+      .select('*')
       .order('updated_at', { ascending: false })
-      .limit(50);
+      .limit(25);
 
-    if (feed && feed.length > 0) {
-      const ids = feed.map((f) => f.tmdb_id);
-      const { data: cacheData } = await supabase
-        .from('series_cache')
-        .select('tmdb_id, media_type, title, poster_path')
-        .in('tmdb_id', ids);
+    const userIds = Array.from(new Set((acts || []).map((a) => a.user_id)));
+    const tmdbIds = Array.from(new Set((acts || []).map((a) => a.tmdb_id)));
 
-      const cacheMap: Record<string, any> = {};
-      (cacheData || []).forEach((c: any) => {
-        cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
+    const perfilesMap: Record<string, string> = {};
+    if (userIds.length > 0) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('id, username')
+        .in('id', userIds);
+      (profs || []).forEach((p: any) => {
+        perfilesMap[p.id] = p.username;
       });
+    }
 
-      const feedEnriquecido = feed.map((item: any) => {
-        const tipo = item.media_type || 'tv';
-        return {
-          ...item,
-          series_cache: cacheMap[`${tipo}-${item.tmdb_id}`] || { title: 'Título', poster_path: null },
+    const cacheMap: Record<string, { title: string; poster_path: string | null }> = {};
+    if (tmdbIds.length > 0) {
+      const { data: cache } = await supabase
+        .from('series_cache')
+        .select('*')
+        .in('tmdb_id', tmdbIds);
+      (cache || []).forEach((c: any) => {
+        cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = {
+          title: c.title,
+          poster_path: c.poster_path,
         };
       });
-      setActividad(feedEnriquecido);
-    } else {
-      setActividad([]);
     }
 
-    // 2. Usuarios seguidos
+    setActividad(
+      (acts || []).map((a: any) => {
+        const clave = `${a.media_type || 'tv'}-${a.tmdb_id}`;
+        return {
+          ...a,
+          username: perfilesMap[a.user_id] || 'usuario',
+          title: cacheMap[clave]?.title || 'Título',
+          poster_path: cacheMap[clave]?.poster_path || null,
+        };
+      })
+    );
+
+    // 2. Datos sociales del usuario logueado (amigos, solicitudes y mensajes no leídos)
     if (user) {
-      const { data: followsData } = await supabase
-        .from('follows')
-        .select('following_id')
-        .eq('follower_id', user.id);
+      const { data: fRows } = await supabase
+        .from('friendships')
+        .select('*')
+        .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`);
 
-      if (followsData) {
-        setSeguidos(followsData.map((f) => f.following_id));
+      const entrantes = (fRows || []).filter(
+        (f) => f.status === 'pending' && f.addressee_id === user.id
+      );
+      const aceptadas = (fRows || []).filter((f) => f.status === 'accepted');
+
+      const todosSocialIds = Array.from(
+        new Set([
+          ...entrantes.map((e) => e.requester_id),
+          ...aceptadas.map((a) => (a.requester_id === user.id ? a.addressee_id : a.requester_id)),
+        ])
+      );
+
+      const socialMap: Record<string, any> = {};
+      if (todosSocialIds.length > 0) {
+        const { data: sProfs } = await supabase
+          .from('profiles')
+          .select('id, username, bio')
+          .in('id', todosSocialIds);
+        (sProfs || []).forEach((p: any) => {
+          socialMap[p.id] = p;
+        });
       }
+
+      setSolicitudesEntrantes(
+        entrantes.map((e) => ({
+          ...e,
+          sender: socialMap[e.requester_id] || { id: e.requester_id, username: 'usuario' },
+        }))
+      );
+
+      setAmigos(
+        aceptadas.map((a) => {
+          const friendId = a.requester_id === user.id ? a.addressee_id : a.requester_id;
+          return {
+            friendshipId: a.id,
+            ...(socialMap[friendId] || { id: friendId, username: 'usuario' }),
+          };
+        })
+      );
+
+      // Mensajes sin leer
+      const { data: unread } = await supabase
+        .from('direct_messages')
+        .select('sender_id')
+        .eq('receiver_id', user.id)
+        .eq('read', false);
+
+      const conteo: Record<string, number> = {};
+      (unread || []).forEach((m: any) => {
+        conteo[m.sender_id] = (conteo[m.sender_id] || 0) + 1;
+      });
+      setMensajesNoLeidos(conteo);
     } else {
-      setSeguidos([]);
+      setSolicitudesEntrantes([]);
+      setAmigos([]);
+      setMensajesNoLeidos({});
     }
 
-    setLoading(false);
+    setCargando(false);
   }
 
   async function buscarUsuarios(texto: string) {
     setBusquedaUser(texto);
-    const limpio = texto.replace(/^@/, '').trim();
-    if (!limpio) {
-      setResultadosUsers([]);
+    if (!texto.trim()) {
+      setUsuariosBusqueda([]);
       return;
     }
-
-    setBuscandoUsers(true);
     const { data } = await supabase
       .from('profiles')
       .select('id, username, bio')
-      .ilike('username', `%${limpio}%`)
+      .ilike('username', `%${texto.trim()}%`)
       .limit(8);
-
-    setResultadosUsers(data || []);
-    setBuscandoUsers(false);
+    setUsuariosBusqueda(data || []);
   }
 
-  async function toggleSeguir(targetUserId: string) {
-    if (!user) return onRequireAuth();
-    if (targetUserId === user.id) return;
-
-    const yaLeSigo = seguidos.includes(targetUserId);
-
-    if (yaLeSigo) {
-      setSeguidos((prev) => prev.filter((id) => id !== targetUserId));
+  async function responderSolicitud(friendshipId: string, aceptar: boolean) {
+    if (aceptar) {
       await supabase
-        .from('follows')
-        .delete()
-        .eq('follower_id', user.id)
-        .eq('following_id', targetUserId);
+        .from('friendships')
+        .update({ status: 'accepted', updated_at: new Date().toISOString() })
+        .eq('id', friendshipId);
     } else {
-      setSeguidos((prev) => [...prev, targetUserId]);
-      await supabase
-        .from('follows')
-        .insert({ follower_id: user.id, following_id: targetUserId });
+      await supabase.from('friendships').delete().eq('id', friendshipId);
     }
+    cargarComunidad();
   }
-
-  function textoEstado(status: string) {
-    switch (status) {
-      case 'watching':
-        return { label: 'está viendo', color: 'text-indigo-400', icon: Eye };
-      case 'completed':
-        return { label: 'ha terminado', color: 'text-emerald-400', icon: Check };
-      default:
-        return { label: 'quiere ver', color: 'text-amber-400', icon: Clock };
-    }
-  }
-
-  const actividadFiltrada =
-    filtro === 'seguidos'
-      ? actividad.filter((item) => seguidos.includes(item.user_id))
-      : actividad;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      {/* Buscador de amigos */}
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 space-y-3">
-        <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={busquedaUser}
-            onChange={(e) => buscarUsuarios(e.target.value)}
-            placeholder="Buscar amigos por nombre de usuario (ej. @alex)..."
-            className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2.5 pl-10 pr-4 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-          />
+    <div className="space-y-8">
+      {/* BLOQUE 1: RED SOCIAL, BUSCADOR DE USUARIOS Y AMIGOS */}
+      <section className="space-y-5 rounded-3xl border border-indigo-500/30 bg-slate-900/45 p-5 shadow-lg">
+        <div className="flex flex-col justify-between gap-3 border-b border-slate-800/80 pb-4 sm:flex-row sm:items-center">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
+              <Users className="h-4 w-4 text-indigo-400" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-white">Amigos y Mensajes</h3>
+              <p className="text-xs text-slate-400">
+                Busca perfiles, acepta solicitudes y chatea en privado
+              </p>
+            </div>
+          </div>
+
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={busquedaUser}
+              onChange={(e) => buscarUsuarios(e.target.value)}
+              placeholder="Buscar @usuario..."
+              className="w-full rounded-xl border border-slate-800 bg-slate-950 py-2 pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+            />
+          </div>
         </div>
 
+        {/* Resultados de búsqueda de usuarios */}
         {busquedaUser.trim() !== '' && (
-          <div className="space-y-2 pt-1">
-            {buscandoUsers ? (
-              <p className="text-xs text-slate-500">Buscando usuarios...</p>
-            ) : resultadosUsers.length === 0 ? (
-              <p className="text-xs text-slate-500">No se encontraron usuarios con ese nombre.</p>
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/80 p-3">
+            <p className="mb-2 text-[11px] font-bold uppercase text-slate-400">
+              Usuarios encontrados ({usuariosBusqueda.length})
+            </p>
+            {usuariosBusqueda.length === 0 ? (
+              <p className="text-xs text-slate-500">No se encontró ningún usuario con ese nombre.</p>
             ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {resultadosUsers.map((u) => {
-                  const esMio = user && u.id === user.id;
-                  const leSigo = seguidos.includes(u.id);
-                  return (
-                    <div
-                      key={u.id}
-                      className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/80 p-3"
-                    >
-                      <div
-                        onClick={() => onSelectUser(u.id)}
-                        className="flex cursor-pointer items-center gap-2.5 min-w-0"
-                      >
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600/30 text-sm font-bold text-indigo-300">
-                          {(u.username || 'U')[0].toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-white hover:text-indigo-400">
-                            @{u.username}
-                          </p>
-                          <p className="truncate text-[11px] text-slate-400">
-                            {u.bio || 'Ver biblioteca pública'}
-                          </p>
-                        </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {usuariosBusqueda.map((u) => (
+                  <button
+                    key={u.id}
+                    onClick={() => onSelectUser(u.id)}
+                    className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-left transition hover:border-indigo-500/50"
+                  >
+                    <div className="flex items-center gap-2.5 truncate">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold uppercase text-white">
+                        {(u.username || 'U')[0]}
                       </div>
-
-                      {!esMio && (
-                        <button
-                          onClick={() => toggleSeguir(u.id)}
-                          className={`ml-2 shrink-0 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                            leSigo
-                              ? 'bg-slate-800 text-slate-300 hover:text-red-400'
-                              : 'bg-indigo-600 text-white hover:bg-indigo-500'
-                          }`}
-                        >
-                          {leSigo ? 'Siguiendo' : 'Seguir'}
-                        </button>
-                      )}
+                      <div className="truncate">
+                        <p className="truncate text-xs font-bold text-white">@{u.username}</p>
+                        <p className="truncate text-[11px] text-slate-400">
+                          {u.bio || 'Ver perfil y biblioteca'}
+                        </p>
+                      </div>
                     </div>
-                  );
-                })}
+                  </button>
+                ))}
               </div>
             )}
           </div>
         )}
-      </div>
 
-      {/* Cabecera del feed */}
-      <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:flex-row sm:items-center">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600/20 text-indigo-400">
-            <Users className="h-5 w-5" />
+        {/* Solicitudes de amistad pendientes */}
+        {user && solicitudesEntrantes.length > 0 && (
+          <div className="space-y-2.5 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-3.5">
+            <p className="flex items-center gap-1.5 text-xs font-bold text-amber-300">
+              <UserPlus className="h-3.5 w-3.5" />
+              Solicitudes de amistad pendientes ({solicitudesEntrantes.length})
+            </p>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {solicitudesEntrantes.map((sol) => (
+                <div
+                  key={sol.id}
+                  className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-3 py-2"
+                >
+                  <button
+                    onClick={() => onSelectUser(sol.sender.id)}
+                    className="text-xs font-bold text-white hover:text-indigo-400"
+                  >
+                    @{sol.sender.username}
+                  </button>
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => responderSolicitud(sol.id, true)}
+                      className="flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-500"
+                    >
+                      <Check className="h-3 w-3" /> Aceptar
+                    </button>
+                    <button
+                      onClick={() => responderSolicitud(sol.id, false)}
+                      className="rounded-lg bg-slate-800 p-1 text-slate-400 hover:text-red-400"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Lista de amigos */}
+        {!user ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-4 text-center">
+            <p className="text-xs text-slate-400">
+              Inicia sesión para agregar amigos y enviar mensajes privados.
+            </p>
+            <button
+              onClick={onRequireAuth}
+              className="mt-2.5 rounded-xl bg-indigo-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-indigo-500"
+            >
+              Entrar a mi cuenta
+            </button>
+          </div>
+        ) : amigos.length === 0 ? (
+          <p className="text-xs text-slate-400">
+            Aún no tienes amigos agregados. Haz clic en cualquier <strong>@usuario</strong> de abajo o búscalos arriba para abrir su perfil y enviarles solicitud.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+            {amigos.map((am) => {
+              const sinLeer = mensajesNoLeidos[am.id] || 0;
+              return (
+                <div
+                  key={am.id}
+                  onClick={() => onSelectUser(am.id)}
+                  className="flex cursor-pointer items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 p-3 transition hover:border-indigo-500/50"
+                >
+                  <div className="flex items-center gap-2.5 truncate">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600/25 text-xs font-bold uppercase text-indigo-300">
+                      {(am.username || 'A')[0]}
+                    </div>
+                    <div className="truncate">
+                      <p className="truncate text-xs font-bold text-white">@{am.username}</p>
+                      <p className="text-[11px] text-slate-400">Ver perfil / Chat</p>
+                    </div>
+                  </div>
+
+                  <div className="relative flex items-center">
+                    <MessageSquare className="h-4 w-4 text-indigo-400" />
+                    {sinLeer > 0 && (
+                      <span className="ml-1 rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {sinLeer}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* BLOQUE 2: ACTIVIDAD RECIENTE DE LA COMUNIDAD */}
+      <section className="rounded-3xl border border-slate-800 bg-slate-900/45 p-5 shadow-lg">
+        <div className="mb-5 flex items-center gap-3 border-b border-slate-800/80 pb-3.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
+            <Flame className="h-4 w-4 text-amber-400" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white">Actividad de la Comunidad</h2>
+            <h3 className="text-base font-bold text-white">Actividad en directo</h3>
             <p className="text-xs text-slate-400">
-              Pulsa en cualquier @usuario para ver su biblioteca completa
+              Pulsa en cualquier usuario para abrir su perfil o en la carátula para ver la ficha
             </p>
           </div>
         </div>
 
-        <div className="flex gap-2 rounded-xl bg-slate-950 p-1">
-          <button
-            onClick={() => setFiltro('todos')}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-              filtro === 'todos' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Global
-          </button>
-          <button
-            onClick={() => (user ? setFiltro('seguidos') : onRequireAuth())}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-              filtro === 'seguidos' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            Siguiendo ({seguidos.length})
-          </button>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="space-y-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-28 animate-pulse rounded-2xl bg-slate-900" />
-          ))}
-        </div>
-      ) : actividadFiltrada.length === 0 ? (
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
-          <Sparkles className="mx-auto mb-2 h-8 w-8 text-slate-600" />
-          <p className="text-sm text-slate-400">
-            {filtro === 'seguidos'
-              ? 'Aún no sigues a nadie o tus amigos no han registrado títulos todavía.'
-              : 'Todavía no hay actividad registrada en la comunidad.'}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {actividadFiltrada.map((item) => {
-            const info = textoEstado(item.status);
-            const Icono = info.icon;
-            const esMio = user && item.user_id === user.id;
-            const leSigo = seguidos.includes(item.user_id);
-            const tipo = (item.media_type || 'tv') as MediaType;
-            const esPeli = tipo === 'movie';
-
-            const mediaObj: MediaTMDB = {
-              id: item.tmdb_id,
-              media_type: tipo,
-              name: item.series_cache?.title || 'Título',
-              overview: '',
-              poster_path: item.series_cache?.poster_path || null,
-              backdrop_path: null,
-              first_air_date: '',
-              vote_average: item.rating || 0,
-            };
-
-            return (
+        {cargando ? (
+          <div className="py-10 text-center text-xs text-slate-400">Cargando actividad...</div>
+        ) : actividad.length === 0 ? (
+          <div className="py-10 text-center text-xs text-slate-400">
+            Aún no hay actividad reciente en la comunidad.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {actividad.map((act) => (
               <div
-                key={item.id}
-                className="flex items-center justify-between gap-4 rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 transition hover:border-slate-700"
+                key={act.id}
+                className="flex items-center gap-3.5 rounded-2xl border border-slate-800/90 bg-slate-950/80 p-3"
               >
-                <div className="flex items-center gap-4">
-                  <img
-                    onClick={() => onSelectSerie(mediaObj)}
-                    src={getPosterUrl(item.series_cache?.poster_path, 'w342')}
-                    alt={item.series_cache?.title}
-                    className="h-20 w-14 cursor-pointer rounded-xl object-cover shadow transition hover:scale-105"
-                  />
+                <img
+                  src={getPosterUrl(act.poster_path, 'w342')}
+                  alt={act.title}
+                  onClick={() =>
+                    onSelectSerie({
+                      id: act.tmdb_id,
+                      media_type: act.media_type || 'tv',
+                      name: act.title,
+                      overview: '',
+                      poster_path: act.poster_path,
+                      backdrop_path: null,
+                      first_air_date: '',
+                      vote_average: act.rating || 0,
+                    })
+                  }
+                  className="h-16 w-11 shrink-0 cursor-pointer rounded-xl object-cover hover:opacity-85"
+                />
 
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-1.5 text-sm">
-                      <button
-                        onClick={() => onSelectUser(item.user_id)}
-                        className="font-bold text-indigo-400 hover:underline"
-                      >
-                        @{item.profiles?.username || 'usuario'}
-                      </button>
-                      <span className={`flex items-center gap-1 font-medium ${info.color}`}>
-                        <Icono className="h-3.5 w-3.5" />
-                        {info.label}
-                      </span>
-                      <span
-                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-                          esPeli
-                            ? 'bg-rose-500/20 text-rose-300'
-                            : 'bg-indigo-500/20 text-indigo-300'
-                        }`}
-                      >
-                        {esPeli ? <Film className="h-2.5 w-2.5" /> : <Tv className="h-2.5 w-2.5" />}
-                        {esPeli ? 'Peli' : 'Serie'}
-                      </span>
-                    </div>
-
-                    <h3
-                      onClick={() => onSelectSerie(mediaObj)}
-                      className="cursor-pointer text-base font-bold text-white hover:text-indigo-400"
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      onClick={() => onSelectUser(act.user_id)}
+                      className="truncate text-xs font-bold text-indigo-400 hover:underline"
                     >
-                      {item.series_cache?.title || 'Título'}
-                    </h3>
+                      @{act.username}
+                    </button>
 
-                    {item.rating > 0 && (
-                      <div className="flex items-center gap-1 pt-0.5">
-                        {[...Array(5)].map((_, idx) => (
-                          <Star
-                            key={idx}
-                            className={`h-3.5 w-3.5 ${
-                              idx < item.rating
-                                ? 'fill-amber-400 text-amber-400'
-                                : 'text-slate-700'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                        act.status === 'completed'
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : act.status === 'watching'
+                          ? 'bg-indigo-500/20 text-indigo-300'
+                          : 'bg-amber-500/20 text-amber-300'
+                      }`}
+                    >
+                      {act.status === 'completed'
+                        ? 'Terminada'
+                        : act.status === 'watching'
+                        ? `Viendo · T${act.current_season} E${act.current_episode}`
+                        : 'Pendiente'}
+                    </span>
                   </div>
-                </div>
 
-                {!esMio && (
-                  <button
-                    onClick={() => toggleSeguir(item.user_id)}
-                    className={`flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
-                      leSigo
-                        ? 'border border-slate-700 bg-slate-800 text-slate-200 hover:border-red-500/50 hover:text-red-400'
-                        : 'bg-indigo-600 text-white hover:bg-indigo-500'
-                    }`}
+                  <p
+                    onClick={() =>
+                      onSelectSerie({
+                        id: act.tmdb_id,
+                        media_type: act.media_type || 'tv',
+                        name: act.title,
+                        overview: '',
+                        poster_path: act.poster_path,
+                        backdrop_path: null,
+                        first_air_date: '',
+                        vote_average: act.rating || 0,
+                      })
+                    }
+                    className="mt-1 cursor-pointer truncate text-sm font-semibold text-white hover:text-indigo-300"
                   >
-                    {leSigo ? (
-                      <>
-                        <UserCheck className="h-3.5 w-3.5" />
-                        Siguiendo
-                      </>
-                    ) : (
-                      <>
-                        <UserPlus className="h-3.5 w-3.5" />
-                        Seguir
-                      </>
-                    )}
-                  </button>
-                )}
+                    {act.title}
+                  </p>
+
+                  {act.rating > 0 && (
+                    <div className="mt-1 flex items-center gap-1 text-xs font-bold text-amber-400">
+                      <Star className="h-3 w-3 fill-amber-400" />
+                      <span>{act.rating}/5</span>
+                    </div>
+                  )}
+                </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
