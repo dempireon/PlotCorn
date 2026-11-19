@@ -1,20 +1,14 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import {
-  getMediaDetails,
-  getWatchProviders,
-  getSeasonEpisodes,
-  getPosterUrl,
-  MediaTMDB,
-  MediaDetalle,
-  EpisodioTMDB,
-} from '@/lib/tmdb';
+import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
+import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import {
-  X, Star, MessageSquare, Send, ShieldAlert, Tv, Film,
-  SendHorizonal, CheckCircle2, Eye, Clock, Check, ListChecks
+  X, Star, Eye, Check, Clock, Play, Tv, Film,
+  Calendar, Sparkles, Users, MessageSquare, Send
 } from 'lucide-react';
+
+const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
 
 interface SerieModalProps {
   serie: MediaTMDB;
@@ -25,11 +19,11 @@ interface SerieModalProps {
     current_season: number;
     current_episode: number;
   };
-  onUpdateEstado?: (
+  onUpdateEstado: (
     status: 'watching' | 'completed' | 'watchlist',
     rating: number,
-    season: number,
-    episode: number
+    season?: number,
+    episode?: number
   ) => void;
   onClose: () => void;
   onRequireAuth: () => void;
@@ -43,915 +37,706 @@ export default function SerieModal({
   onClose,
   onRequireAuth,
 }: SerieModalProps) {
-  const esPelicula = serie.media_type === 'movie';
+  const [detalle, setDetalle] = useState<any>(null);
+  const [reparto, setReparto] = useState<any[]>([]);
+  const [plataformasES, setPlataformasES] = useState<any[]>([]);
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
+  const [mostrarTrailer, setMostrarTrailer] = useState(false);
+  const [similares, setSimilares] = useState<MediaTMDB[]>([]);
 
-  const [detalle, setDetalle] = useState<MediaDetalle | null>(null);
-  const [plataformas, setPlataformas] = useState<any[]>([]);
-  const [tab, setTab] = useState<'episodios' | 'chat' | 'resenas'>(esPelicula ? 'chat' : 'episodios');
+  // Gestión de temporadas y episodios (solo series)
+  const [temporadaSeleccionada, setTemporadaSeleccionada] = useState<number>(
+    estadoActual?.current_season || 1
+  );
+  const [episodiosTemp, setEpisodiosTemp] = useState<any[]>([]);
+  const [episodiosVistosMap, setEpisodiosVistosMap] = useState<
+    Record<string, { rating: number; review: string }>
+  >({});
 
-  // Cuadrícula de episodios, notas y comentarios por episodio
-  const [tempVistaCuadro, setTempVistaCuadro] = useState<number>(estadoActual?.current_season || 1);
-  const [episodiosTemp, setEpisodiosTemp] = useState<EpisodioTMDB[]>([]);
-  const [episodiosVistos, setEpisodiosVistos] = useState<Record<string, { watched: boolean; rating: number }>>({});
-  const [cargandoEpisodios, setCargandoEpisodios] = useState(false);
+  // Comentarios de la comunidad sobre este título
+  const [comentarios, setComentarios] = useState<any[]>([]);
+  const [nuevoComentario, setNuevoComentario] = useState('');
+  const [enviandoCom, setEnviandoCom] = useState(false);
 
-  const [episodioSeleccionado, setEpisodioSeleccionado] = useState<EpisodioTMDB | null>(null);
-  const [comentariosEp, setComentariosEp] = useState<any[]>([]);
-  const [nuevoComentarioEp, setNuevoComentarioEp] = useState('');
-  const [cargandoComentariosEp, setCargandoComentariosEp] = useState(false);
+  const [cargando, setCargando] = useState(true);
+  const [mediaActiva, setMediaActiva] = useState<MediaTMDB>(serie);
 
-  // Reseñas generales
-  const [reviews, setReviews] = useState<any[]>([]);
-  const [nuevaReview, setNuevaReview] = useState('');
-  const [tieneSpoilers, setTieneSpoilers] = useState(false);
-  const [revelarSpoilers, setRevelarSpoilers] = useState<Record<string, boolean>>({});
-
-  // Chat general
-  const [mensajes, setMensajes] = useState<any[]>([]);
-  const [nuevoMensaje, setNuevoMensaje] = useState('');
-  const [temporadaSeleccionada, setTemporadaSeleccionada] = useState(1);
-  const [filtroMaxTemporada, setFiltroMaxTemporada] = useState<number>(99);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const esPeli = mediaActiva.media_type === 'movie';
 
   useEffect(() => {
-    cargarTodo();
-
-    const channel = supabase
-      .channel(`chat-${serie.media_type}-${serie.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chat_messages',
-          filter: `tmdb_id=eq.${serie.id}`,
-        },
-        async (payload) => {
-          if ((payload.new.media_type || 'tv') !== serie.media_type) return;
-
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('username')
-            .eq('id', payload.new.user_id)
-            .single();
-
-          setMensajes((prev) => [
-            ...prev,
-            { ...payload.new, profiles: { username: profile?.username || 'usuario' } },
-          ]);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [serie.id, serie.media_type]);
+    setMediaActiva(serie);
+    setMostrarTrailer(false);
+  }, [serie]);
 
   useEffect(() => {
-    if (!esPelicula) {
-      setEpisodioSeleccionado(null);
-      cargarEpisodiosDeTemporada(tempVistaCuadro);
+    cargarFichaCompleta();
+  }, [mediaActiva.id, mediaActiva.media_type, user?.id]);
+
+  useEffect(() => {
+    if (!esPeli && mediaActiva.id) {
+      cargarEpisodiosTemporada(temporadaSeleccionada);
     }
-  }, [tempVistaCuadro, serie.id, esPelicula]);
+  }, [temporadaSeleccionada, mediaActiva.id, esPeli]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [mensajes, tab]);
+  async function cargarFichaCompleta() {
+    setCargando(true);
+    const tipo = mediaActiva.media_type || 'tv';
 
-  async function cargarTodo() {
-    const [det, provs] = await Promise.all([
-      getMediaDetails(serie.id, serie.media_type),
-      getWatchProviders(serie.id, serie.media_type),
-    ]);
-    setDetalle(det);
-    setPlataformas(provs);
-    if (det?.number_of_seasons) {
-      setFiltroMaxTemporada(det.number_of_seasons);
-    }
+    try {
+      // 1. Detalles + créditos + vídeos + proveedores + recomendaciones en una sola llamada TMDB
+      const res = await fetch(
+        `https://api.themoviedb.org/3/${tipo}/${mediaActiva.id}?api_key=${TMDB_API_KEY}&language=es-ES&append_to_response=credits,videos,watch/providers,recommendations`
+      );
+      const data = await res.json();
+      setDetalle(data);
 
-    if (!esPelicula && user) {
-      const { data: vistos } = await supabase
-        .from('watched_episodes')
-        .select('season_number, episode_number, rating')
-        .eq('user_id', user.id)
-        .eq('tmdb_id', serie.id);
+      // Reparto principal (top 12)
+      setReparto((data.credits?.cast || []).slice(0, 12));
 
-      if (vistos) {
-        const mapaVistos: Record<string, { watched: boolean; rating: number }> = {};
-        vistos.forEach((v) => {
-          mapaVistos[`${v.season_number}-${v.episode_number}`] = {
-            watched: true,
+      // Plataformas en España (ES)
+      const provES = data['watch/providers']?.results?.ES;
+      const flatrate = provES?.flatrate || [];
+      const free = provES?.free || [];
+      const ads = provES?.ads || [];
+      const unicosMap: Record<number, any> = {};
+      [...flatrate, ...free, ...ads].forEach((p: any) => {
+        unicosMap[p.provider_id] = p;
+      });
+      setPlataformasES(Object.values(unicosMap));
+
+      // Tráiler en español o fallback en inglés
+      let videos = data.videos?.results || [];
+      if (videos.length === 0) {
+        const resEn = await fetch(
+          `https://api.themoviedb.org/3/${tipo}/${mediaActiva.id}/videos?api_key=${TMDB_API_KEY}&language=en-US`
+        );
+        const dataEn = await resEn.json();
+        videos = dataEn.results || [];
+      }
+      const trailer =
+        videos.find((v: any) => v.site === 'YouTube' && v.type === 'Trailer') ||
+        videos.find((v: any) => v.site === 'YouTube');
+      setTrailerKey(trailer?.key || null);
+
+      // Recomendaciones similares
+      const recs = (data.recommendations?.results || []).slice(0, 5).map((r: any) => ({
+        id: r.id,
+        media_type: (r.media_type || tipo) as MediaType,
+        name: r.title || r.name,
+        overview: r.overview || '',
+        poster_path: r.poster_path,
+        backdrop_path: r.backdrop_path,
+        first_air_date: r.release_date || r.first_air_date || '',
+        vote_average: r.vote_average || 0,
+      }));
+      setSimilares(recs);
+
+      // Si es serie, cargar episodios vistos del usuario
+      if (tipo === 'tv' && user) {
+        const { data: vistos } = await supabase
+          .from('watched_episodes')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('tmdb_id', mediaActiva.id);
+
+        const mapa: Record<string, { rating: number; review: string }> = {};
+        (vistos || []).forEach((v: any) => {
+          mapa[`${v.season_number}-${v.episode_number}`] = {
             rating: v.rating || 0,
+            review: v.review || '',
           };
         });
-        setEpisodiosVistos(mapaVistos);
+        setEpisodiosVistosMap(mapa);
+      } else {
+        setEpisodiosVistosMap({});
       }
+
+      // Cargar reseñas / comentarios de la comunidad
+      await cargarComentarios();
+    } catch (err) {
+      console.error('Error cargando ficha:', err);
     }
 
-    const { data: revs } = await supabase
-      .from('reviews')
-      .select('*, profiles(username)')
-      .eq('tmdb_id', serie.id)
-      .eq('media_type', serie.media_type)
-      .order('created_at', { ascending: false });
-    if (revs) setReviews(revs);
-
-    const { data: msgs } = await supabase
-      .from('chat_messages')
-      .select('*, profiles(username)')
-      .eq('tmdb_id', serie.id)
-      .eq('media_type', serie.media_type)
-      .order('created_at', { ascending: true })
-      .limit(100);
-    if (msgs) setMensajes(msgs);
+    setCargando(false);
   }
 
-  async function cargarEpisodiosDeTemporada(seasonNum: number) {
-    setCargandoEpisodios(true);
-    const eps = await getSeasonEpisodes(serie.id, seasonNum);
-    setEpisodiosTemp(eps);
-    setCargandoEpisodios(false);
-  }
-
-  async function abrirDetalleEpisodio(ep: EpisodioTMDB) {
-    setEpisodioSeleccionado(ep);
-    setCargandoComentariosEp(true);
-    const { data } = await supabase
-      .from('episode_comments')
-      .select('*, profiles(username)')
-      .eq('tmdb_id', serie.id)
-      .eq('season_number', tempVistaCuadro)
-      .eq('episode_number', ep.episode_number)
-      .order('created_at', { ascending: false });
-
-    setComentariosEp(data || []);
-    setCargandoComentariosEp(false);
+  async function cargarEpisodiosTemporada(seasonNum: number) {
+    try {
+      const res = await fetch(
+        `https://api.themoviedb.org/3/tv/${mediaActiva.id}/season/${seasonNum}?api_key=${TMDB_API_KEY}&language=es-ES`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setEpisodiosTemp(data.episodes || []);
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   async function toggleEpisodioVisto(seasonNum: number, episodeNum: number) {
     if (!user) return onRequireAuth();
-
     const clave = `${seasonNum}-${episodeNum}`;
-    const yaVisto = episodiosVistos[clave]?.watched;
-    const copia = { ...episodiosVistos };
+    const yaVisto = !!episodiosVistosMap[clave];
 
     if (yaVisto) {
-      delete copia[clave];
-      setEpisodiosVistos(copia);
+      setEpisodiosVistosMap((prev) => {
+        const copia = { ...prev };
+        delete copia[clave];
+        return copia;
+      });
       await supabase
         .from('watched_episodes')
         .delete()
         .eq('user_id', user.id)
-        .eq('tmdb_id', serie.id)
+        .eq('tmdb_id', mediaActiva.id)
         .eq('season_number', seasonNum)
         .eq('episode_number', episodeNum);
     } else {
-      copia[clave] = { watched: true, rating: 0 };
-      setEpisodiosVistos(copia);
-      await supabase.from('watched_episodes').upsert({
-        user_id: user.id,
-        tmdb_id: serie.id,
-        season_number: seasonNum,
-        episode_number: episodeNum,
-        rating: 0,
-      });
+      setEpisodiosVistosMap((prev) => ({
+        ...prev,
+        [clave]: { rating: 0, review: '' },
+      }));
 
-      if (onUpdateEstado && estadoActual?.status !== 'completed') {
-        onUpdateEstado('watching', estadoActual?.rating || 0, seasonNum, episodeNum);
-      }
+      await supabase.from('watched_episodes').upsert(
+        {
+          user_id: user.id,
+          tmdb_id: mediaActiva.id,
+          season_number: seasonNum,
+          episode_number: episodeNum,
+          rating: 0,
+          watched_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,tmdb_id,season_number,episode_number' }
+      );
+
+      // Actualizar progreso automático en biblioteca si está viendo
+      onUpdateEstado(
+        estadoActual?.status === 'completed' ? 'completed' : 'watching',
+        estadoActual?.rating || 0,
+        seasonNum,
+        episodeNum
+      );
     }
   }
 
   async function puntuarEpisodio(seasonNum: number, episodeNum: number, rating: number) {
     if (!user) return onRequireAuth();
-
     const clave = `${seasonNum}-${episodeNum}`;
-    setEpisodiosVistos((prev) => ({
+    setEpisodiosVistosMap((prev) => ({
       ...prev,
-      [clave]: { watched: true, rating },
+      [clave]: { rating, review: prev[clave]?.review || '' },
     }));
 
-    await supabase.from('watched_episodes').upsert({
-      user_id: user.id,
-      tmdb_id: serie.id,
-      season_number: seasonNum,
-      episode_number: episodeNum,
-      rating,
-    });
-
-    if (onUpdateEstado && !estadoActual) {
-      onUpdateEstado('watching', 0, seasonNum, episodeNum);
-    }
-  }
-
-  async function publicarComentarioEpisodio(e: React.FormEvent) {
-    e.preventDefault();
-    if (!user) return onRequireAuth();
-    if (!episodioSeleccionado || !nuevoComentarioEp.trim()) return;
-
-    const texto = nuevoComentarioEp.trim();
-    setNuevoComentarioEp('');
-
-    const { data, error } = await supabase
-      .from('episode_comments')
-      .insert({
+    await supabase.from('watched_episodes').upsert(
+      {
         user_id: user.id,
-        tmdb_id: serie.id,
-        season_number: tempVistaCuadro,
-        episode_number: episodioSeleccionado.episode_number,
-        content: texto,
-      })
-      .select('*, profiles(username)')
-      .single();
-
-    if (!error && data) {
-      setComentariosEp([data, ...comentariosEp]);
-    }
-  }
-
-  async function marcarTemporadaCompleta(seasonNum: number) {
-    if (!user) return onRequireAuth();
-    if (episodiosTemp.length === 0) return;
-
-    const copia = { ...episodiosVistos };
-    const filas = episodiosTemp.map((ep) => {
-      const clave = `${seasonNum}-${ep.episode_number}`;
-      const notaPrevia = copia[clave]?.rating || 0;
-      copia[clave] = { watched: true, rating: notaPrevia };
-      return {
-        user_id: user.id,
-        tmdb_id: serie.id,
+        tmdb_id: mediaActiva.id,
         season_number: seasonNum,
-        episode_number: ep.episode_number,
-        rating: notaPrevia,
-      };
+        episode_number: episodeNum,
+        rating,
+        watched_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,tmdb_id,season_number,episode_number' }
+    );
+  }
+
+  async function cargarComentarios() {
+    const { data } = await supabase
+      .from('comments')
+      .select('*')
+      .eq('tmdb_id', mediaActiva.id)
+      .order('created_at', { ascending: false });
+
+    if (!data || data.length === 0) {
+      setComentarios([]);
+      return;
+    }
+
+    const uIds = Array.from(new Set(data.map((c: any) => c.user_id)));
+    const { data: profs } = await supabase
+      .from('profiles')
+      .select('id, username')
+      .in('id', uIds);
+
+    const pMap: Record<string, string> = {};
+    (profs || []).forEach((p: any) => {
+      pMap[p.id] = p.username;
     });
 
-    setEpisodiosVistos(copia);
-    await supabase.from('watched_episodes').upsert(filas);
-
-    if (onUpdateEstado && estadoActual?.status !== 'completed') {
-      const ultimoEp = episodiosTemp[episodiosTemp.length - 1].episode_number;
-      onUpdateEstado('watching', estadoActual?.rating || 0, seasonNum, ultimoEp);
-    }
+    setComentarios(
+      data.map((c: any) => ({
+        ...c,
+        username: pMap[c.user_id] || 'usuario',
+      }))
+    );
   }
 
-  async function asegurarEnCache() {
-    await supabase.from('series_cache').upsert({
-      tmdb_id: serie.id,
-      media_type: serie.media_type,
-      title: serie.name,
-      poster_path: serie.poster_path,
-      total_seasons: detalle?.number_of_seasons || 1,
-    });
-  }
-
-  async function publicarReview(e: React.FormEvent) {
+  async function publicarComentario(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return onRequireAuth();
-    if (!nuevaReview.trim()) return;
+    if (!nuevoComentario.trim() || enviandoCom) return;
 
-    await asegurarEnCache();
-    const { data, error } = await supabase
-      .from('reviews')
-      .insert({
-        user_id: user.id,
-        tmdb_id: serie.id,
-        media_type: serie.media_type,
-        content: nuevaReview.trim(),
-        has_spoilers: tieneSpoilers,
-      })
-      .select('*, profiles(username)')
-      .single();
+    setEnviandoCom(true);
+    const texto = nuevoComentario.trim();
+    setNuevoComentario('');
 
-    if (!error && data) {
-      setReviews([data, ...reviews]);
-      setNuevaReview('');
-      setTieneSpoilers(false);
-    }
-  }
-
-  async function enviarMensajeChat(e: React.FormEvent) {
-    e.preventDefault();
-    if (!user) return onRequireAuth();
-    if (!nuevoMensaje.trim()) return;
-
-    const texto = nuevoMensaje.trim();
-    setNuevoMensaje('');
-
-    await asegurarEnCache();
-    await supabase.from('chat_messages').insert({
-      tmdb_id: serie.id,
-      media_type: serie.media_type,
+    const { error } = await supabase.from('comments').insert({
       user_id: user.id,
-      message: texto,
-      season_tag: esPelicula ? 1 : temporadaSeleccionada,
+      tmdb_id: mediaActiva.id,
+      media_type: mediaActiva.media_type || 'tv',
+      content: texto,
     });
+
+    if (!error) {
+      await cargarComentarios();
+    }
+    setEnviandoCom(false);
   }
 
-  const totalTemporadas = detalle?.number_of_seasons || 1;
-  const mensajesFiltrados = esPelicula
-    ? mensajes
-    : mensajes.filter((m) => (m.season_tag || 1) <= filtroMaxTemporada);
+  const titulo = detalle?.title || detalle?.name || mediaActiva.name;
+  const fechaLanzamiento = detalle?.release_date || detalle?.first_air_date || '';
+  const anio = fechaLanzamiento ? fechaLanzamiento.slice(0, 4) : '';
+  const duracion = esPeli
+    ? detalle?.runtime
+      ? `${detalle.runtime} min`
+      : null
+    : detalle?.number_of_seasons
+    ? `${detalle.number_of_seasons} temp${detalle.number_of_seasons > 1 ? 's' : ''}`
+    : null;
 
-  const seasonActual = estadoActual?.current_season || 1;
-  const episodeActual = estadoActual?.current_episode || 1;
-
-  const vistosEnEstaTemp = episodiosTemp.filter(
-    (ep) => episodiosVistos[`${tempVistaCuadro}-${ep.episode_number}`]?.watched
-  ).length;
+  const temporadasValidas = (detalle?.seasons || []).filter((s: any) => s.season_number > 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md sm:p-6">
-      <div className="relative flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-900 shadow-2xl">
-        <button
-          onClick={onClose}
-          className="absolute right-4 top-4 z-10 rounded-full bg-slate-950/90 p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
-        >
-          <X className="h-5 w-5" />
-        </button>
-
-        <div className="overflow-y-auto p-6">
-          {/* Cabecera */}
-          <div className="flex flex-col gap-6 sm:flex-row">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 sm:p-5 backdrop-blur-md"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
+      >
+        {/* Cabecera con fondo panorámico */}
+        <div className="relative shrink-0 border-b border-slate-800 bg-slate-900">
+          {detalle?.backdrop_path && (
             <img
-              src={getPosterUrl(serie.poster_path)}
-              alt={serie.name}
-              className="h-72 w-48 self-center rounded-2xl object-cover shadow-2xl sm:self-start"
+              src={`https://image.tmdb.org/t/p/w1280${detalle.backdrop_path}`}
+              alt={titulo}
+              className="absolute inset-0 h-full w-full object-cover opacity-25"
+            />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-slate-950/40" />
+
+          <button
+            onClick={onClose}
+            className="absolute right-4 top-4 z-10 rounded-full bg-slate-950/80 p-2 text-slate-300 backdrop-blur-md transition hover:bg-slate-800 hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+
+          <div className="relative flex flex-col gap-5 p-6 sm:flex-row sm:items-end">
+            <img
+              src={getPosterUrl(detalle?.poster_path || mediaActiva.poster_path)}
+              alt={titulo}
+              className="h-44 w-32 shrink-0 rounded-2xl border border-slate-700/80 object-cover shadow-2xl"
             />
 
-            <div className="flex-1 space-y-4">
+            <div className="min-w-0 flex-1 space-y-2.5">
               <div className="flex flex-wrap items-center gap-2">
                 <span
-                  className={`flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold uppercase ${
-                    esPelicula
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase ${
+                    esPeli
                       ? 'bg-rose-500/20 text-rose-300'
                       : 'bg-indigo-500/20 text-indigo-300'
                   }`}
                 >
-                  {esPelicula ? <Film className="h-3.5 w-3.5" /> : <Tv className="h-3.5 w-3.5" />}
-                  {esPelicula ? 'Película' : 'Serie'}
+                  {esPeli ? <Film className="h-3 w-3" /> : <Tv className="h-3 w-3" />}
+                  {esPeli ? 'Película' : 'Serie'}
                 </span>
-                <h2 className="text-2xl font-bold text-white">{serie.name}</h2>
-                {serie.vote_average > 0 && (
-                  <span className="flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-bold text-amber-400">
+
+                {anio && (
+                  <span className="flex items-center gap-1 text-xs text-slate-300">
+                    <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                    {anio}
+                  </span>
+                )}
+
+                {duracion && (
+                  <span className="flex items-center gap-1 text-xs text-slate-300">
+                    <Clock className="h-3.5 w-3.5 text-slate-400" />
+                    {duracion}
+                  </span>
+                )}
+
+                {(detalle?.vote_average || mediaActiva.vote_average) > 0 && (
+                  <span className="flex items-center gap-1 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-bold text-amber-400">
                     <Star className="h-3.5 w-3.5 fill-amber-400" />
-                    {serie.vote_average.toFixed(1)}
+                    {(detalle?.vote_average || mediaActiva.vote_average).toFixed(1)} TMDB
                   </span>
                 )}
               </div>
 
-              {detalle && (
-                <div className="flex flex-wrap gap-2 text-xs text-slate-300">
-                  <span className="rounded-lg bg-slate-800/90 px-2.5 py-1 font-medium">
-                    {esPelicula
-                      ? `${detalle.runtime || '?'} min · ${detalle.first_air_date?.slice(0, 4) || ''}`
-                      : `${detalle.number_of_seasons} Temporadas · ${detalle.number_of_episodes} Episodios`}
-                  </span>
-                  {detalle.genres?.map((g) => (
-                    <span key={g.id} className="rounded-lg border border-slate-800 px-2.5 py-1 text-slate-400">
+              <h2 className="text-2xl font-bold leading-tight text-white">{titulo}</h2>
+
+              {/* Géneros */}
+              {detalle?.genres && detalle.genres.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {detalle.genres.map((g: any) => (
+                    <span
+                      key={g.id}
+                      className="rounded-lg border border-slate-800 bg-slate-900/90 px-2.5 py-0.5 text-[11px] text-slate-300"
+                    >
                       {g.name}
                     </span>
                   ))}
                 </div>
               )}
 
-              <p className="text-sm leading-relaxed text-slate-300">
-                {detalle?.overview || serie.overview || 'Sin sinopsis disponible en español.'}
-              </p>
+              {/* Controles de estado, nota y botón Tráiler */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <button
+                  onClick={() => onUpdateEstado('watching', estadoActual?.rating || 0)}
+                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                    estadoActual?.status === 'watching'
+                      ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                      : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-indigo-500'
+                  }`}
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  Viendo
+                </button>
 
-              {/* Controles de Estado y Nota */}
-              {onUpdateEstado && (
-                <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Tu estado
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <span className="mr-1 text-xs text-slate-400">Nota global:</span>
-                      {[1, 2, 3, 4, 5].map((estrella) => (
-                        <button
-                          key={estrella}
-                          onClick={() =>
-                            onUpdateEstado(
-                              estadoActual?.status || 'completed',
-                              estrella,
-                              seasonActual,
-                              episodeActual
-                            )
-                          }
-                          className="p-0.5 transition hover:scale-110"
+                <button
+                  onClick={() => onUpdateEstado('completed', estadoActual?.rating || 0)}
+                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                    estadoActual?.status === 'completed'
+                      ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
+                      : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-emerald-500'
+                  }`}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  {esPeli ? 'Vista' : 'Terminada'}
+                </button>
+
+                <button
+                  onClick={() => onUpdateEstado('watchlist', estadoActual?.rating || 0)}
+                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                    estadoActual?.status === 'watchlist'
+                      ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
+                      : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-amber-500'
+                  }`}
+                >
+                  <Clock className="h-3.5 w-3.5" />
+                  Pendiente
+                </button>
+
+                {/* Estrellas de puntuación */}
+                <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5">
+                  {[1, 2, 3, 4, 5].map((num) => (
+                    <button
+                      key={num}
+                      onClick={() =>
+                        onUpdateEstado(estadoActual?.status || 'completed', num)
+                      }
+                      className="text-slate-600 transition hover:scale-110 hover:text-amber-400"
+                    >
+                      <Star
+                        className={`h-3.5 w-3.5 ${
+                          (estadoActual?.rating || 0) >= num
+                            ? 'fill-amber-400 text-amber-400'
+                            : ''
+                        }`}
+                      />
+                    </button>
+                  ))}
+                </div>
+
+                {/* Botón Tráiler */}
+                {trailerKey && (
+                  <button
+                    onClick={() => setMostrarTrailer(!mostrarTrailer)}
+                    className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-lg shadow-rose-600/30 transition hover:bg-rose-500"
+                  >
+                    <Play className="h-3.5 w-3.5 fill-white" />
+                    {mostrarTrailer ? 'Ocultar tráiler' : 'Ver tráiler'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Cuerpo con desplazamiento */}
+        <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          {cargando ? (
+            <div className="py-12 text-center text-sm text-slate-400">
+              Cargando ficha técnica...
+            </div>
+          ) : (
+            <>
+              {/* Reproductor de Tráiler incrustado */}
+              {mostrarTrailer && trailerKey && (
+                <div className="overflow-hidden rounded-2xl border border-slate-800 bg-black shadow-xl">
+                  <div className="aspect-video w-full">
+                    <iframe
+                      src={`https://www.youtube.com/embed/${trailerKey}?autoplay=1`}
+                      title="Tráiler oficial"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                      className="h-full w-full"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Sinopsis + Plataformas en España */}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <div className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 lg:col-span-2">
+                  <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Sinopsis
+                  </h3>
+                  <p className="text-sm leading-relaxed text-slate-200">
+                    {detalle?.overview ||
+                      mediaActiva.overview ||
+                      'No hay sinopsis disponible en español para este título.'}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-indigo-500/30 bg-slate-900/45 p-4">
+                  <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-indigo-300">
+                    <Tv className="h-3.5 w-3.5" />
+                    Dónde ver en España
+                  </h3>
+                  {plataformasES.length === 0 ? (
+                    <p className="text-xs text-slate-400">
+                      No disponible actualmente en suscripción en España.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2.5">
+                      {plataformasES.map((prov: any) => (
+                        <div
+                          key={prov.provider_id}
+                          className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950 px-2.5 py-1.5"
+                          title={prov.provider_name}
                         >
-                          <Star
-                            className={`h-4 w-4 ${
-                              (estadoActual?.rating || 0) >= estrella
-                                ? 'fill-amber-400 text-amber-400'
-                                : 'text-slate-600 hover:text-amber-400'
-                            }`}
+                          <img
+                            src={`https://image.tmdb.org/t/p/original${prov.logo_path}`}
+                            alt={prov.provider_name}
+                            className="h-6 w-6 rounded-lg object-cover"
                           />
+                          <span className="text-xs font-semibold text-slate-200">
+                            {prov.provider_name}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Reparto Principal */}
+              {reparto.length > 0 && (
+                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                  <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <Users className="h-3.5 w-3.5 text-indigo-400" />
+                    Reparto principal
+                  </h3>
+                  <div className="flex gap-3 overflow-x-auto pb-2">
+                    {reparto.map((actor: any) => (
+                      <div
+                        key={actor.id}
+                        className="w-24 shrink-0 rounded-xl border border-slate-800 bg-slate-950 p-2 text-center"
+                      >
+                        <img
+                          src={
+                            actor.profile_path
+                              ? `https://image.tmdb.org/t/p/w185${actor.profile_path}`
+                              : 'https://via.placeholder.com/185x278/1e293b/94a3b8?text=Sin+Foto'
+                          }
+                          alt={actor.name}
+                          className="mx-auto h-24 w-20 rounded-lg object-cover"
+                        />
+                        <p className="mt-1.5 line-clamp-1 text-[11px] font-bold text-white">
+                          {actor.name}
+                        </p>
+                        <p className="line-clamp-1 text-[10px] text-slate-400">
+                          {actor.character}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Lista de Episodios por Temporada (solo series) */}
+              {!esPeli && temporadasValidas.length > 0 && (
+                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Episodios por temporada
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5">
+                      {temporadasValidas.map((temp: any) => (
+                        <button
+                          key={temp.season_number}
+                          onClick={() => setTemporadaSeleccionada(temp.season_number)}
+                          className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
+                            temporadaSeleccionada === temp.season_number
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-slate-950 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Temp {temp.season_number}
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      onClick={() =>
-                        onUpdateEstado('watching', estadoActual?.rating || 0, seasonActual, episodeActual)
-                      }
-                      className={`flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition ${
-                        estadoActual?.status === 'watching'
-                          ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
-                          : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <Eye className="h-4 w-4" />
-                      {esPelicula ? 'Viendo' : 'Siguiendo'}
-                    </button>
-                    <button
-                      onClick={() =>
-                        onUpdateEstado('completed', estadoActual?.rating || 0, seasonActual, episodeActual)
-                      }
-                      className={`flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition ${
-                        estadoActual?.status === 'completed'
-                          ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
-                          : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <CheckCircle2 className="h-4 w-4" />
-                      {esPelicula ? 'Vista' : 'Terminada'}
-                    </button>
-                    <button
-                      onClick={() =>
-                        onUpdateEstado('watchlist', estadoActual?.rating || 0, seasonActual, episodeActual)
-                      }
-                      className={`flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-semibold transition ${
-                        estadoActual?.status === 'watchlist'
-                          ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
-                          : 'bg-slate-900 text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <Clock className="h-4 w-4" />
-                      Pendiente
-                    </button>
-                  </div>
-                </div>
-              )}
+                  <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                    {episodiosTemp.map((ep: any) => {
+                      const clave = `${temporadaSeleccionada}-${ep.episode_number}`;
+                      const infoEp = episodiosVistosMap[clave];
+                      const visto = !!infoEp;
 
-              {plataformas.length > 0 && (
-                <div>
-                  <p className="mb-1.5 text-xs font-medium text-slate-400">Dónde ver en España:</p>
-                  <div className="flex flex-wrap gap-2">
-                    {plataformas.map((p: any) => (
-                      <div
-                        key={p.provider_id}
-                        className="flex items-center gap-1.5 rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1 text-xs text-slate-200"
-                      >
-                        <img
-                          src={`https://image.tmdb.org/t/p/original${p.logo_path}`}
-                          alt={p.provider_name}
-                          className="h-4 w-4 rounded"
-                        />
-                        {p.provider_name}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Pestañas */}
-          <div className="mt-8 border-b border-slate-800">
-            <div className="flex gap-6">
-              {!esPelicula && (
-                <button
-                  onClick={() => setTab('episodios')}
-                  className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${
-                    tab === 'episodios'
-                      ? 'border-emerald-500 text-emerald-400'
-                      : 'border-transparent text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <ListChecks className="h-4 w-4" />
-                  Episodios ({Object.keys(episodiosVistos).length} vistos)
-                </button>
-              )}
-              <button
-                onClick={() => setTab('chat')}
-                className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${
-                  tab === 'chat'
-                    ? 'border-indigo-500 text-indigo-400'
-                    : 'border-transparent text-slate-400 hover:text-white'
-                }`}
-              >
-                <Tv className="h-4 w-4" />
-                Chat general ({mensajesFiltrados.length})
-              </button>
-              <button
-                onClick={() => setTab('resenas')}
-                className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${
-                  tab === 'resenas'
-                    ? 'border-indigo-500 text-indigo-400'
-                    : 'border-transparent text-slate-400 hover:text-white'
-                }`}
-              >
-                <MessageSquare className="h-4 w-4" />
-                Reseñas ({reviews.length})
-              </button>
-            </div>
-          </div>
-
-          {/* CUADRO VISUAL DE EPISODIOS + NOTA Y COMENTARIOS POR CAPÍTULO */}
-          {!esPelicula && tab === 'episodios' && (
-            <div className="mt-5 space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap gap-1.5">
-                  {[...Array(totalTemporadas)].map((_, idx) => {
-                    const numTemp = idx + 1;
-                    return (
-                      <button
-                        key={numTemp}
-                        onClick={() => setTempVistaCuadro(numTemp)}
-                        className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition ${
-                          tempVistaCuadro === numTemp
-                            ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                            : 'bg-slate-950 text-slate-400 hover:bg-slate-800 hover:text-white'
-                        }`}
-                      >
-                        Temp {numTemp}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-slate-400">
-                    {vistosEnEstaTemp} / {episodiosTemp.length} vistos
-                  </span>
-                  <button
-                    onClick={() => marcarTemporadaCompleta(tempVistaCuadro)}
-                    className="flex items-center gap-1.5 rounded-xl border border-emerald-500/40 bg-emerald-600/20 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-600 hover:text-white"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    Marcar Temp {tempVistaCuadro} vista
-                  </button>
-                </div>
-              </div>
-
-              {episodiosTemp.length > 0 && (
-                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-950">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-300"
-                    style={{
-                      width: `${Math.round((vistosEnEstaTemp / episodiosTemp.length) * 100)}%`,
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Cuadrícula de episodios */}
-              {cargandoEpisodios ? (
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-                  {[...Array(8)].map((_, i) => (
-                    <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-950" />
-                  ))}
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4">
-                  {episodiosTemp.map((ep) => {
-                    const infoEp = episodiosVistos[`${tempVistaCuadro}-${ep.episode_number}`];
-                    const visto = infoEp?.watched;
-                    const seleccionado = episodioSeleccionado?.episode_number === ep.episode_number;
-
-                    return (
-                      <div
-                        key={ep.id || ep.episode_number}
-                        onClick={() => abrirDetalleEpisodio(ep)}
-                        className={`flex cursor-pointer flex-col justify-between rounded-xl border p-3 transition ${
-                          seleccionado
-                            ? 'border-indigo-500 bg-indigo-950/40 ring-1 ring-indigo-500'
-                            : visto
-                            ? 'border-emerald-500/50 bg-emerald-950/30 hover:border-emerald-400'
-                            : 'border-slate-800 bg-slate-950/70 hover:border-slate-600'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={`text-xs font-bold ${
-                                visto ? 'text-emerald-400' : 'text-slate-400'
-                              }`}
-                            >
-                              Ep. {ep.episode_number}
-                            </span>
-                            {infoEp && infoEp.rating > 0 && (
-                              <span className="flex items-center gap-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-400">
-                                ★{infoEp.rating}
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Botón directo de visto */}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleEpisodioVisto(tempVistaCuadro, ep.episode_number);
-                            }}
-                            title={visto ? 'Desmarcar visto' : 'Marcar como visto'}
-                            className={`flex h-6 w-6 items-center justify-center rounded-full transition ${
-                              visto
-                                ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-                                : 'border border-slate-700 bg-slate-900 text-slate-500 hover:border-emerald-500 hover:text-emerald-400'
-                            }`}
-                          >
-                            <Check className="h-3.5 w-3.5 stroke-[3]" />
-                          </button>
-                        </div>
-
-                        <p className="mt-2 line-clamp-1 text-xs font-medium text-slate-200">
-                          {ep.name || `Episodio ${ep.episode_number}`}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* PANEL INTERACTIVO DEL EPISODIO SELECCIONADO (Nota + Comentarios) */}
-              {episodioSeleccionado ? (
-                <div className="rounded-2xl border border-indigo-500/40 bg-slate-950/90 p-5 shadow-xl space-y-4">
-                  <div className="flex flex-col justify-between gap-3 border-b border-slate-800 pb-4 sm:flex-row sm:items-center">
-                    <div>
-                      <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
-                        Temporada {tempVistaCuadro} · Episodio {episodioSeleccionado.episode_number}
-                      </span>
-                      <h4 className="text-lg font-bold text-white">
-                        {episodioSeleccionado.name}
-                      </h4>
-                    </div>
-
-                    {/* Puntuación del episodio */}
-                    <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
-                      <span className="text-xs text-slate-400">Tu nota del ep:</span>
-                      <div className="flex gap-1">
-                        {[1, 2, 3, 4, 5].map((estrella) => {
-                          const notaEp =
-                            episodiosVistos[`${tempVistaCuadro}-${episodioSeleccionado.episode_number}`]
-                              ?.rating || 0;
-                          return (
-                            <button
-                              key={estrella}
-                              onClick={() =>
-                                puntuarEpisodio(
-                                  tempVistaCuadro,
-                                  episodioSeleccionado.episode_number,
-                                  estrella
-                                )
-                              }
-                              className="transition hover:scale-110"
-                            >
-                              <Star
-                                className={`h-4 w-4 ${
-                                  notaEp >= estrella
-                                    ? 'fill-amber-400 text-amber-400'
-                                    : 'text-slate-600 hover:text-amber-400'
-                                }`}
-                              />
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {episodioSeleccionado.overview && (
-                    <p className="text-xs leading-relaxed text-slate-400">
-                      {episodioSeleccionado.overview}
-                    </p>
-                  )}
-
-                  {/* Caja para comentar este episodio */}
-                  <form onSubmit={publicarComentarioEpisodio} className="flex gap-2">
-                    <input
-                      type="text"
-                      value={nuevoComentarioEp}
-                      onChange={(e) => setNuevoComentarioEp(e.target.value)}
-                      placeholder={`Comenta qué te ha parecido el T${tempVistaCuadro}E${episodioSeleccionado.episode_number}...`}
-                      className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-                    />
-                    <button
-                      type="submit"
-                      className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
-                    >
-                      <Send className="h-3.5 w-3.5" />
-                      Comentar
-                    </button>
-                  </form>
-
-                  {/* Lista de comentarios de este episodio */}
-                  <div className="max-h-48 space-y-2 overflow-y-auto pt-1">
-                    {cargandoComentariosEp ? (
-                      <p className="text-center text-xs text-slate-500">Cargando comentarios...</p>
-                    ) : comentariosEp.length === 0 ? (
-                      <p className="py-3 text-center text-xs text-slate-500">
-                        Nadie ha comentado este episodio aún. ¡Sé el primero!
-                      </p>
-                    ) : (
-                      comentariosEp.map((com) => (
+                      return (
                         <div
-                          key={com.id}
-                          className="rounded-xl border border-slate-800/80 bg-slate-900/80 p-3"
-                        >
-                          <div className="mb-1 flex items-center justify-between">
-                            <span className="text-xs font-bold text-indigo-400">
-                              @{com.profiles?.username || 'usuario'}
-                            </span>
-                          </div>
-                          <p className="text-xs text-slate-200">{com.content}</p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-center text-xs text-slate-500">
-                  Haz clic en cualquier episodio de la cuadrícula para puntuarlo y leer o escribir comentarios sobre ese capítulo.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Chat general */}
-          {tab === 'chat' && (
-            <div className="mt-4 space-y-4">
-              {!esPelicula && (
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-950/80 p-3 text-xs">
-                  <div className="flex items-center gap-2 text-slate-300">
-                    <ShieldAlert className="h-4 w-4 text-amber-400" />
-                    <span>Escudo anti-spoilers: mostrar mensajes hasta la</span>
-                  </div>
-                  <select
-                    value={filtroMaxTemporada}
-                    onChange={(e) => setFiltroMaxTemporada(Number(e.target.value))}
-                    className="rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-white focus:border-indigo-500 focus:outline-none"
-                  >
-                    {[...Array(totalTemporadas)].map((_, i) => (
-                      <option key={i + 1} value={i + 1}>
-                        Temporada {i + 1}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <div className="h-60 space-y-3 overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
-                {mensajesFiltrados.length === 0 ? (
-                  <p className="py-16 text-center text-xs text-slate-500">
-                    Nadie ha comentado aún. ¡Rompe el hielo!
-                  </p>
-                ) : (
-                  mensajesFiltrados.map((msg) => {
-                    const esMio = user && msg.user_id === user.id;
-                    return (
-                      <div
-                        key={msg.id}
-                        className={`flex flex-col ${esMio ? 'items-end' : 'items-start'}`}
-                      >
-                        <div className="mb-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                          <span className="font-semibold text-indigo-400">
-                            @{msg.profiles?.username || 'usuario'}
-                          </span>
-                          {!esPelicula && (
-                            <span className="rounded bg-slate-800 px-1.5 py-0.2 text-[10px] text-slate-300">
-                              T{msg.season_tag || 1}
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${
-                            esMio
-                              ? 'bg-indigo-600 text-white'
-                              : 'bg-slate-800 text-slate-100'
+                          key={ep.id}
+                          className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition ${
+                            visto
+                              ? 'border-emerald-500/30 bg-emerald-500/5'
+                              : 'border-slate-800 bg-slate-950/80'
                           }`}
                         >
-                          {msg.message}
+                          <div className="flex min-w-0 items-center gap-3">
+                            <button
+                              onClick={() =>
+                                toggleEpisodioVisto(temporadaSeleccionada, ep.episode_number)
+                              }
+                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${
+                                visto
+                                  ? 'border-emerald-500 bg-emerald-600 text-white'
+                                  : 'border-slate-700 bg-slate-900 text-transparent hover:border-indigo-500'
+                              }`}
+                            >
+                              <Check className="h-4 w-4" />
+                            </button>
+
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-bold text-white">
+                                {ep.episode_number}. {ep.name}
+                              </p>
+                              <p className="line-clamp-1 text-[11px] text-slate-400">
+                                {ep.overview || 'Sin descripción disponible'}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Nota rápida al episodio */}
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            {[1, 2, 3, 4, 5].map((estrella) => (
+                              <button
+                                key={estrella}
+                                onClick={() =>
+                                  puntuarEpisodio(
+                                    temporadaSeleccionada,
+                                    ep.episode_number,
+                                    estrella
+                                  )
+                                }
+                                className="p-0.5 text-slate-700 hover:text-amber-400"
+                              >
+                                <Star
+                                  className={`h-3 w-3 ${
+                                    (infoEp?.rating || 0) >= estrella
+                                      ? 'fill-amber-400 text-amber-400'
+                                      : ''
+                                  }`}
+                                />
+                              </button>
+                            ))}
+                          </div>
                         </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {/* Títulos similares / Recomendados */}
+              {similares.length > 0 && (
+                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                  <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+                    Títulos similares recomendados
+                  </h3>
+                  <div className="grid grid-cols-3 gap-3 sm:grid-cols-5">
+                    {similares.map((sim) => (
+                      <div
+                        key={sim.id}
+                        onClick={() => {
+                          setMostrarTrailer(false);
+                          setMediaActiva(sim);
+                        }}
+                        className="cursor-pointer space-y-1.5"
+                      >
+                        <img
+                          src={getPosterUrl(sim.poster_path)}
+                          alt={sim.name}
+                          className="aspect-[2/3] w-full rounded-xl object-cover transition hover:scale-105"
+                        />
+                        <p className="truncate text-xs font-semibold text-slate-200">
+                          {sim.name}
+                        </p>
                       </div>
-                    );
-                  })
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              <form onSubmit={enviarMensajeChat} className="flex gap-2">
-                {!esPelicula && (
-                  <select
-                    value={temporadaSeleccionada}
-                    onChange={(e) => setTemporadaSeleccionada(Number(e.target.value))}
-                    className="rounded-xl border border-slate-700 bg-slate-950 px-2.5 text-xs text-slate-200 focus:border-indigo-500 focus:outline-none"
-                  >
-                    {[...Array(totalTemporadas)].map((_, i) => (
-                      <option key={i + 1} value={i + 1}>
-                        T{i + 1}
-                      </option>
                     ))}
-                  </select>
-                )}
-                <input
-                  type="text"
-                  value={nuevoMensaje}
-                  onChange={(e) => setNuevoMensaje(e.target.value)}
-                  placeholder={
-                    user
-                      ? 'Escribe en el chat general...'
-                      : 'Inicia sesión para participar en el chat'
-                  }
-                  className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-                />
-                <button
-                  type="submit"
-                  className="flex items-center justify-center rounded-xl bg-indigo-600 px-4 text-white transition hover:bg-indigo-500"
-                >
-                  <SendHorizonal className="h-4 w-4" />
-                </button>
-              </form>
-            </div>
-          )}
+                  </div>
+                </section>
+              )}
 
-          {/* Reseñas */}
-          {tab === 'resenas' && (
-            <div className="mt-4 space-y-5">
-              <form onSubmit={publicarReview} className="space-y-3 rounded-2xl bg-slate-950/60 p-4">
-                <textarea
-                  rows={3}
-                  value={nuevaReview}
-                  onChange={(e) => setNuevaReview(e.target.value)}
-                  placeholder={`Escribe tu opinión sobre esta ${esPelicula ? 'película' : 'serie'}...`}
-                  className="w-full rounded-xl border border-slate-800 bg-slate-900 p-3 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-                />
-                <div className="flex items-center justify-between">
-                  <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-                    <input
-                      type="checkbox"
-                      checked={tieneSpoilers}
-                      onChange={(e) => setTieneSpoilers(e.target.checked)}
-                      className="rounded border-slate-700 bg-slate-900 text-indigo-600"
-                    />
-                    Contiene spoilers
-                  </label>
+              {/* Comentarios de la comunidad */}
+              <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 space-y-3">
+                <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <MessageSquare className="h-3.5 w-3.5 text-indigo-400" />
+                  Opiniones de la comunidad ({comentarios.length})
+                </h3>
+
+                <form onSubmit={publicarComentario} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={nuevoComentario}
+                    onChange={(e) => setNuevoComentario(e.target.value)}
+                    placeholder="Escribe qué te pareció este título..."
+                    className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                  />
                   <button
                     type="submit"
-                    className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500"
+                    disabled={!nuevoComentario.trim() || enviandoCom}
+                    className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
                   >
                     <Send className="h-3.5 w-3.5" />
-                    Publicar reseña
+                    Publicar
                   </button>
-                </div>
-              </form>
+                </form>
 
-              <div className="space-y-3">
-                {reviews.length === 0 ? (
-                  <p className="py-6 text-center text-xs text-slate-500">
-                    Aún no hay reseñas. Sé el primero en valorar.
-                  </p>
-                ) : (
-                  reviews.map((rev) => {
-                    const oculto = rev.has_spoilers && !revelarSpoilers[rev.id];
-                    return (
+                {comentarios.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    {comentarios.map((com) => (
                       <div
-                        key={rev.id}
-                        className="rounded-2xl border border-slate-800/80 bg-slate-950/40 p-4"
+                        key={com.id}
+                        className="rounded-xl border border-slate-800 bg-slate-950/80 px-3.5 py-2.5"
                       >
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="text-xs font-semibold text-indigo-400">
-                            @{rev.profiles?.username || 'usuario'}
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-indigo-400">@{com.username}</span>
+                          <span className="text-slate-500">
+                            {new Date(com.created_at).toLocaleDateString('es-ES')}
                           </span>
-                          {rev.has_spoilers && (
-                            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                              Spoiler
-                            </span>
-                          )}
                         </div>
-                        {oculto ? (
-                          <button
-                            onClick={() =>
-                              setRevelarSpoilers((prev) => ({ ...prev, [rev.id]: true }))
-                            }
-                            className="w-full rounded-xl bg-slate-900 py-3 text-xs text-slate-400 hover:text-white"
-                          >
-                            ⚠️ Reseña oculta por spoilers. Haz clic para leer.
-                          </button>
-                        ) : (
-                          <p className="text-sm text-slate-200">{rev.content}</p>
-                        )}
+                        <p className="mt-1 text-xs text-slate-200">{com.content}</p>
                       </div>
-                    );
-                  })
+                    ))}
+                  </div>
                 )}
-              </div>
-            </div>
+              </section>
+            </>
           )}
         </div>
       </div>
