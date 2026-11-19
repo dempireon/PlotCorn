@@ -17,7 +17,6 @@ import AuthModal from '@/components/AuthModal';
 import SerieModal from '@/components/SerieModal';
 import ComunidadFeed from '@/components/ComunidadFeed';
 import UserProfileModal from '@/components/UserProfileModal';
-import EstadisticasPanel from '@/components/EstadisticasPanel';
 import { Coleccion } from '@/components/ColeccionesBar';
 import ProximosEstrenosBar from '@/components/ProximosEstrenosBar';
 import RecomendacionesParaTi from '@/components/RecomendacionesParaTi';
@@ -26,12 +25,12 @@ import {
   Search, Star, Tv, Film, Check, Clock, Eye, Sparkles,
   User, LogOut, Bookmark, Users, Plus, Trash2, ChevronDown,
   Clapperboard, Flame, SlidersHorizontal, RotateCcw, FolderPlus,
-  Calendar, BarChart3, Folder, Library, Globe, Lock, Compass, ArrowUpDown,
+  Calendar, Folder, Library, Globe, Lock, Compass, ArrowUpDown,
   Bell, Dices
 } from 'lucide-react';
 
 type EstadoMedia = 'watching' | 'completed' | 'watchlist';
-type TabBiblioteca = 'catalogo' | 'colecciones' | 'estrenos' | 'estadisticas';
+type TabBiblioteca = 'catalogo' | 'colecciones' | 'estrenos';
 type OrdenBiblioteca = 'recientes' | 'nota' | 'alfabetico';
 
 interface ItemGuardado {
@@ -534,7 +533,6 @@ export default function Home() {
       return;
     }
 
-    // Solo sincroniza desde BD si no hubo un clic posterior más reciente
     if (peticionEpRef.current[clave] === turno && typeof rating === 'number') {
       setNotasEpisodiosMap((prev) => ({
         ...prev,
@@ -587,8 +585,6 @@ export default function Home() {
         ? 'Completado'
         : 'Pendiente';
     mostrarToast(`${item.name} · ${etiquetaEstado}${rating > 0 ? ` · ★${rating}` : ''}`);
-
-    
 
     await supabase.from('profiles').upsert(
       {
@@ -729,7 +725,6 @@ export default function Home() {
 
   const tituloSeccion = () => {
     if (vista === 'biblioteca') {
-      if (tabBiblioteca === 'estadisticas') return 'Mis Estadísticas';
       if (tabBiblioteca === 'estrenos') return 'Próximos Estrenos';
       if (tabBiblioteca === 'colecciones') return 'Mis Colecciones';
       return 'Mi Biblioteca';
@@ -1461,17 +1456,15 @@ export default function Home() {
               </div>
             )}
 
-            
-            {/* VISTA MI BIBLIOTECA */}
             {vista === 'biblioteca' && user && (
-              <div className="space-y-6">
-                <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-800 bg-slate-900/65 p-2 shadow-sm">
+              <>
+                <div className="mb-6 flex flex-wrap gap-2 border-b border-slate-800 pb-4">
                   <button
                     onClick={() => setTabBiblioteca('catalogo')}
                     className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'catalogo'
-                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                        : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Library className="h-3.5 w-3.5" />
@@ -1482,8 +1475,8 @@ export default function Home() {
                     onClick={() => setTabBiblioteca('colecciones')}
                     className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'colecciones'
-                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                        : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Folder className="h-3.5 w-3.5" />
@@ -1494,30 +1487,14 @@ export default function Home() {
                     onClick={() => setTabBiblioteca('estrenos')}
                     className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'estrenos'
-                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
+                        : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Calendar className="h-3.5 w-3.5" />
                     Próximos estrenos
                   </button>
-
-                  <button
-                    onClick={() => setTabBiblioteca('estadisticas')}
-                    className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
-                      tabBiblioteca === 'estadisticas'
-                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
-                    }`}
-                  >
-                    <BarChart3 className="h-3.5 w-3.5" />
-                    Estadísticas
-                  </button>
                 </div>
-
-                {tabBiblioteca === 'estadisticas' && (
-                  <EstadisticasPanel userId={user.id} itemsBiblioteca={todosGuardados} />
-                )}
 
                 {tabBiblioteca === 'estrenos' && (
                   <ProximosEstrenosBar
@@ -1532,7 +1509,7 @@ export default function Home() {
                   <div className="space-y-8">
                     <form
                       onSubmit={handleCrearColeccionSubmit}
-                      className="flex flex-col gap-2.5 rounded-3xl border border-slate-800 bg-slate-900/70 p-4 shadow-md sm:flex-row sm:items-center"
+                      className="flex flex-col gap-2.5 rounded-3xl border border-slate-800 bg-slate-900/65 p-4 shadow-md sm:flex-row sm:items-center"
                     >
                       <div className="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wider text-indigo-400">
                         <FolderPlus className="h-4 w-4" />
@@ -1546,7 +1523,7 @@ export default function Home() {
                         value={nuevaColNombre}
                         onChange={(e) => setNuevaColNombre(e.target.value)}
                         placeholder="Nombre (ej. Maratón de finde)"
-                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                       />
 
                       <input
@@ -1555,13 +1532,13 @@ export default function Home() {
                         value={nuevaColDesc}
                         onChange={(e) => setNuevaColDesc(e.target.value)}
                         placeholder="Descripción opcional..."
-                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                       />
 
                       <button
                         type="button"
                         onClick={() => setNuevaColPublica(!nuevaColPublica)}
-                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
+                        className={`flex items-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
                           nuevaColPublica
                             ? 'border-emerald-400/50 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30'
                             : 'border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800'
@@ -1574,7 +1551,7 @@ export default function Home() {
                       <button
                         type="submit"
                         disabled={creandoCol || !nuevaColNombre.trim()}
-                        className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500 disabled:opacity-50"
+                        className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/30 hover:bg-indigo-500 disabled:opacity-50"
                       >
                         <Plus className="h-3.5 w-3.5" />
                         Crear colección
@@ -1582,9 +1559,9 @@ export default function Home() {
                     </form>
 
                     {colecciones.length === 0 ? (
-                      <div className="rounded-3xl border border-slate-800 bg-slate-900/45 p-12 text-center">
-                        <p className="text-sm text-slate-400">
-                          Aún no has creado ninguna colección. Crea una arriba y añade títulos desde el menú de cualquier tarjeta.
+                      <div className="rounded-3xl border border-slate-800 bg-slate-900/40 p-12 text-center">
+                        <p className="text-slate-400">
+                          Aún no has creado ninguna colección. Crea una arriba y añade títulos desde cualquier tarjeta.
                         </p>
                       </div>
                     ) : (
@@ -1612,11 +1589,11 @@ export default function Home() {
                         return (
                           <section
                             key={col.id}
-                            className="rounded-3xl border border-indigo-500/30 bg-gradient-to-br from-slate-900/75 via-slate-900/50 to-indigo-950/15 p-5 shadow-lg sm:p-6"
+                            className="rounded-3xl border border-indigo-500/30 bg-slate-900/45 p-5 shadow-lg"
                           >
-                            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/90 pb-4">
+                            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3.5">
                               <div className="flex items-center gap-3">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-indigo-500/30 bg-slate-950">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
                                   <Folder className="h-4 w-4 text-indigo-400" />
                                 </div>
                                 <div>
@@ -1686,15 +1663,15 @@ export default function Home() {
                 {tabBiblioteca === 'catalogo' && (
                   <div className="space-y-8">
                     {totalBiblioteca > 0 && (
-                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-3.5 shadow-md sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-3 shadow-md sm:flex-row sm:items-center sm:justify-between">
                         <div className="relative flex-1 sm:max-w-xs">
-                          <Search className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-indigo-400" />
+                          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-indigo-400" />
                           <input
                             type="text"
                             value={busquedaBiblio}
                             onChange={(e) => setBusquedaBiblio(e.target.value)}
                             placeholder="Filtrar en mi biblioteca..."
-                            className="w-full rounded-xl border border-slate-700 bg-slate-950 py-1.5 pl-9 pr-3 text-xs font-medium text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950 py-1.5 pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
                           />
                         </div>
 
@@ -1725,8 +1702,8 @@ export default function Home() {
                     )}
 
                     {bloquesCatalogo.every((b) => b.items.length === 0) ? (
-                      <div className="rounded-3xl border border-slate-800 bg-slate-900/45 p-12 text-center">
-                        <p className="text-sm text-slate-400">
+                      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
+                        <p className="text-slate-400">
                           {busquedaBiblio
                             ? `No hay coincidencias para "${busquedaBiblio}" en tu biblioteca.`
                             : 'No hay títulos guardados en esta categoría.'}
@@ -1740,7 +1717,7 @@ export default function Home() {
                               setFiltroTipo('all');
                             }
                           }}
-                          className="mt-4 rounded-xl border border-indigo-400/50 bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500"
+                          className="mt-4 rounded-xl border border-indigo-400/50 bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-indigo-600/30 hover:bg-indigo-500"
                         >
                           {busquedaBiblio ? 'Limpiar búsqueda' : 'Explorar catálogo'}
                         </button>
@@ -1749,44 +1726,35 @@ export default function Home() {
                       <div className="space-y-8">
                         {bloquesCatalogo
                           .filter((bloque) => bloque.items.length > 0)
-                          .map((bloque) => {
-                            const degradadoBloque =
-                              bloque.key === 'watching'
-                                ? 'from-slate-900/80 via-slate-900/50 to-indigo-950/20'
-                                : bloque.key === 'watchlist'
-                                ? 'from-slate-900/80 via-slate-900/50 to-amber-950/15'
-                                : 'from-slate-900/80 via-slate-900/50 to-emerald-950/15';
-
-                            return (
-                              <section
-                                key={bloque.key}
-                                className={`rounded-3xl border ${bloque.acentoBorder} bg-gradient-to-br ${degradadoBloque} p-5 shadow-lg sm:p-6`}
-                              >
-                                <div className="mb-5 flex items-center justify-between border-b border-slate-800/90 pb-4">
-                                  <div className="flex items-center gap-3">
-                                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-800 bg-slate-950 shadow-sm">
-                                      {bloque.icono}
+                          .map((bloque) => (
+                            <section
+                              key={bloque.key}
+                              className={`rounded-3xl border ${bloque.acentoBorder} bg-slate-900/45 p-5 shadow-lg`}
+                            >
+                              <div className="mb-5 flex items-center justify-between border-b border-slate-800/80 pb-3.5">
+                                <div className="flex items-center gap-3">
+                                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
+                                    {bloque.icono}
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-2">
+                                      <h3 className="text-base font-bold text-white">
+                                        {bloque.titulo}
+                                      </h3>
+                                      <span
+                                        className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${bloque.acentoBadge}`}
+                                      >
+                                        {bloque.items.length}
+                                      </span>
                                     </div>
-                                    <div>
-                                      <div className="flex items-center gap-2">
-                                        <h3 className="text-base font-bold text-white">
-                                          {bloque.titulo}
-                                        </h3>
-                                        <span
-                                          className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${bloque.acentoBadge}`}
-                                        >
-                                          {bloque.items.length}
-                                        </span>
-                                      </div>
-                                      <p className="text-xs text-slate-400">{bloque.subtitulo}</p>
-                                    </div>
+                                    <p className="text-xs text-slate-400">{bloque.subtitulo}</p>
                                   </div>
                                 </div>
+                              </div>
 
-                                {renderGridTarjetas(bloque.items, `${bloque.key}-`)}
-                              </section>
-                            );
-                          })}
+                              {renderGridTarjetas(bloque.items, `${bloque.key}-`)}
+                            </section>
+                          ))}
                       </div>
                     )}
 
@@ -1799,7 +1767,7 @@ export default function Home() {
                     )}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </>
         )}
