@@ -74,8 +74,9 @@ export default function SerieModal({
   useEffect(() => {
     if (!esPeli && mediaActiva.id) {
       cargarEpisodiosTemporada(temporadaSeleccionada);
+      recargarEpisodiosVistos();
     }
-  }, [temporadaSeleccionada, mediaActiva.id, esPeli]);
+  }, [temporadaSeleccionada, mediaActiva.id, esPeli, user?.id]);
 
   async function compartirFicha() {
     const url = `${window.location.origin}/?media=${mediaActiva.media_type || 'tv'}-${mediaActiva.id}`;
@@ -156,6 +157,38 @@ export default function SerieModal({
             review: v.review || '',
           };
         });
+
+        if (estadoActual?.status === 'watching') {
+          const topeTemp = estadoActual.current_season || 1;
+          const topeEp = estadoActual.current_episode || 1;
+          const nuevosVistos: any[] = [];
+
+          for (let t = 1; t <= topeTemp; t++) {
+            const limiteEpTemp = t < topeTemp ? 30 : topeEp;
+            for (let e = 1; e <= limiteEpTemp; e++) {
+              const clave = `${t}-${e}`;
+              if (!mapa[clave]) {
+                mapa[clave] = { rating: 0, review: '' };
+                nuevosVistos.push({
+                  user_id: user.id,
+                  tmdb_id: mediaActiva.id,
+                  season_number: t,
+                  episode_number: e,
+                  rating: 0,
+                  watched_at: new Date().toISOString(),
+                });
+              }
+            }
+          }
+
+          if (nuevosVistos.length > 0) {
+            await supabase.from('watched_episodes').upsert(nuevosVistos, {
+              onConflict: 'user_id,tmdb_id,season_number,episode_number',
+              ignoreDuplicates: true,
+            });
+          }
+        }
+
         setEpisodiosVistosMap(mapa);
       } else {
         setEpisodiosVistosMap({});
@@ -167,6 +200,29 @@ export default function SerieModal({
     }
 
     setCargando(false);
+  }
+
+  async function recargarEpisodiosVistos() {
+    if (esPeli || !user) return;
+    const { data: vistos } = await supabase
+      .from('watched_episodes')
+      .select('season_number, episode_number, rating, review')
+      .eq('user_id', user.id)
+      .eq('tmdb_id', mediaActiva.id);
+
+    setEpisodiosVistosMap((prev) => {
+      const mapa: Record<string, { rating: number; review: string }> = { ...prev };
+      (vistos || []).forEach((v: any) => {
+        const key = `${v.season_number}-${v.episode_number}`;
+        const notaBd = v.rating || 0;
+        const notaPrev = mapa[key]?.rating || 0;
+        mapa[key] = {
+          rating: notaBd > 0 ? notaBd : notaPrev,
+          review: v.review || mapa[key]?.review || '',
+        };
+      });
+      return mapa;
+    });
   }
 
   async function cargarEpisodiosTemporada(seasonNum: number) {
@@ -440,23 +496,29 @@ export default function SerieModal({
                 </button>
 
                 <div className="flex items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 sm:gap-1 sm:rounded-xl sm:px-2.5 sm:py-1.5">
-                  {[1, 2, 3, 4, 5].map((num) => (
-                    <button
-                      key={num}
-                      onClick={() =>
-                        onUpdateEstado(estadoActual?.status || 'completed', num)
-                      }
-                      className="text-slate-600 transition hover:scale-110 hover:text-amber-400"
-                    >
-                      <Star
-                        className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
-                          (estadoActual?.rating || 0) >= num
-                            ? 'fill-amber-400 text-amber-400'
-                            : ''
-                        }`}
-                      />
-                    </button>
-                  ))}
+                  {[1, 2, 3, 4, 5].map((num) => {
+                    const notaActual = estadoActual?.rating || 0;
+                    const nuevaNota = notaActual === num ? 0 : num;
+                    return (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() =>
+                          onUpdateEstado(estadoActual?.status || 'completed', nuevaNota)
+                        }
+                        className="text-slate-600 transition hover:scale-110 hover:text-amber-400"
+                        title={nuevaNota === 0 ? 'Quitar puntuación' : `Puntuar con ${num}`}
+                      >
+                        <Star
+                          className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
+                            notaActual >= num
+                              ? 'fill-amber-400 text-amber-400'
+                              : ''
+                          }`}
+                        />
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {trailerKey && (
@@ -652,27 +714,33 @@ export default function SerieModal({
                           </div>
 
                           <div className="flex shrink-0 items-center gap-0.5">
-                            {[1, 2, 3, 4, 5].map((estrella) => (
-                              <button
-                                key={estrella}
-                                onClick={() =>
-                                  puntuarEpisodio(
-                                    temporadaSeleccionada,
-                                    ep.episode_number,
-                                    estrella
-                                  )
-                                }
-                                className="p-0.5 text-slate-700 hover:text-amber-400"
-                              >
-                                <Star
-                                  className={`h-3 w-3 ${
-                                    (infoEp?.rating || 0) >= estrella
-                                      ? 'fill-amber-400 text-amber-400'
-                                      : ''
-                                  }`}
-                                />
-                              </button>
-                            ))}
+                            {[1, 2, 3, 4, 5].map((estrella) => {
+                              const notaEpActual = infoEp?.rating || 0;
+                              const nuevaNotaEp = notaEpActual === estrella ? 0 : estrella;
+                              return (
+                                <button
+                                  key={estrella}
+                                  type="button"
+                                  onClick={() =>
+                                    puntuarEpisodio(
+                                      temporadaSeleccionada,
+                                      ep.episode_number,
+                                      nuevaNotaEp
+                                    )
+                                  }
+                                  className="p-0.5 text-slate-700 hover:text-amber-400"
+                                  title={nuevaNotaEp === 0 ? 'Quitar puntuación' : `Puntuar con ${estrella}`}
+                                >
+                                  <Star
+                                    className={`h-3 w-3 ${
+                                      notaEpActual >= estrella
+                                        ? 'fill-amber-400 text-amber-400'
+                                        : ''
+                                    }`}
+                                  />
+                                </button>
+                              );
+                            })}
                           </div>
                         </div>
                       );

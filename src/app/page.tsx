@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   discoverMediaAvanzado,
   searchMedia,
@@ -55,6 +55,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [cargandoUsuario, setCargandoUsuario] = useState(true);
   const [vista, setVista] = useState<'explorar' | 'biblioteca' | 'comunidad'>('explorar');
+  const peticionEpRef = useRef<Record<string, number>>({});
 
   // Filtros internos dentro de Mi Biblioteca
   const [busquedaBiblio, setBusquedaBiblio] = useState('');
@@ -77,6 +78,7 @@ export default function Home() {
   const [itemActivo, setItemActivo] = useState<MediaTMDB | null>(null);
   const [perfilActivoId, setPerfilActivoId] = useState<string | null>(null);
   const [menuAbierto, setMenuAbierto] = useState<string | null>(null);
+  const [notasEpisodiosMap, setNotasEpisodiosMap] = useState<Record<string, number>>({});
   const [temporadasCache, setTemporadasCache] = useState<Record<number, Record<number, number>>>({});
   const [miLista, setMiLista] = useState<Record<string, ItemGuardado>>({});
   const [colecciones, setColecciones] = useState<Coleccion[]>([]);
@@ -188,6 +190,19 @@ export default function Home() {
       .single();
     if (profile) setUsername(profile.username);
 
+    const { data: episodiosData } = await supabase
+      .from('watched_episodes')
+      .select('tmdb_id, season_number, episode_number, rating')
+      .eq('user_id', userId);
+
+    const notasMap: Record<string, number> = {};
+    (episodiosData || []).forEach((ep: any) => {
+      if (ep.rating > 0) {
+        notasMap[`${ep.tmdb_id}-${ep.season_number}-${ep.episode_number}`] = ep.rating;
+      }
+    });
+    setNotasEpisodiosMap(notasMap);
+
     const { data: userSeries, error } = await supabase
       .from('user_series')
       .select('*')
@@ -273,6 +288,24 @@ export default function Home() {
       setMiLista({});
     }
     setCargandoUsuario(false);
+  }
+
+  async function cargarNotasSerie(tmdbId: number) {
+    if (!user) return;
+    const { data } = await supabase
+      .from('watched_episodes')
+      .select('season_number, episode_number, rating')
+      .eq('user_id', user.id)
+      .eq('tmdb_id', tmdbId);
+
+    if (!data) return;
+    setNotasEpisodiosMap((prev) => {
+      const copia = { ...prev };
+      data.forEach((ep: any) => {
+        copia[`${tmdbId}-${ep.season_number}-${ep.episode_number}`] = ep.rating || 0;
+      });
+      return copia;
+    });
   }
 
   async function handleCrearColeccionSubmit(e: React.FormEvent) {
@@ -463,6 +496,53 @@ export default function Home() {
     setLoading(false);
   }
 
+  async function registrarEpisodioVisto(
+    item: MediaTMDB,
+    season: number,
+    episode: number,
+    rating?: number
+  ) {
+    if (!user) return;
+    const clave = `${item.id}-${season}-${episode}`;
+    const notaFinal =
+      typeof rating === 'number' ? rating : notasEpisodiosMap[clave] || 0;
+
+    if (typeof rating === 'number') {
+      setNotasEpisodiosMap((prev) => ({
+        ...prev,
+        [clave]: rating,
+      }));
+    }
+
+    const turno = (peticionEpRef.current[clave] || 0) + 1;
+    peticionEpRef.current[clave] = turno;
+
+    const { error } = await supabase.from('watched_episodes').upsert(
+      {
+        user_id: user.id,
+        tmdb_id: item.id,
+        season_number: season,
+        episode_number: episode,
+        rating: notaFinal,
+        watched_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,tmdb_id,season_number,episode_number' }
+    );
+
+    if (error) {
+      console.error('Error guardando nota de episodio:', error.message);
+      return;
+    }
+
+    // Solo sincroniza desde BD si no hubo un clic posterior más reciente
+    if (peticionEpRef.current[clave] === turno && typeof rating === 'number') {
+      setNotasEpisodiosMap((prev) => ({
+        ...prev,
+        [clave]: notaFinal,
+      }));
+    }
+  }
+
   async function guardarEnNube(
     item: MediaTMDB,
     status: EstadoMedia,
@@ -507,6 +587,8 @@ export default function Home() {
         ? 'Completado'
         : 'Pendiente';
     mostrarToast(`${item.name} · ${etiquetaEstado}${rating > 0 ? ` · ★${rating}` : ''}`);
+
+    
 
     await supabase.from('profiles').upsert(
       {
@@ -705,13 +787,15 @@ export default function Home() {
             <div key={claveMenu} className="group flex flex-col">
               <div
                 onClick={() => setItemActivo(item)}
-                className="relative aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900 shadow-md transition duration-300 group-hover:border-indigo-500/60 group-hover:shadow-xl group-hover:shadow-indigo-950/30"
+                className="relative aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-2xl border border-slate-800/90 bg-slate-900 shadow-lg transition duration-300 group-hover:-translate-y-1 group-hover:border-indigo-500/60 group-hover:shadow-2xl group-hover:shadow-indigo-950/40"
               >
                 <img
                   src={getPosterUrl(item.poster_path)}
                   alt={item.name}
                   className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                 />
+
+                <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-slate-950/65 to-transparent" />
 
                 <div
                   className={`absolute left-2.5 top-2.5 flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase backdrop-blur-md ${
@@ -725,7 +809,7 @@ export default function Home() {
                 </div>
 
                 {item.vote_average > 0 && (
-                  <div className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-full bg-slate-950/80 px-2 py-0.5 text-xs font-semibold text-amber-400 backdrop-blur-sm">
+                  <div className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-full bg-slate-950/85 px-2 py-0.5 text-xs font-semibold text-amber-400 backdrop-blur-sm">
                     <Star className="h-3 w-3 fill-amber-400" />
                     {item.vote_average.toFixed(1)}
                   </div>
@@ -735,12 +819,12 @@ export default function Home() {
               <div className="mt-2.5 px-0.5">
                 <h3
                   onClick={() => setItemActivo(item)}
-                  className="line-clamp-1 cursor-pointer text-sm font-semibold text-white transition hover:text-indigo-400"
+                  className="line-clamp-1 cursor-pointer text-sm font-semibold text-white transition group-hover:text-indigo-400"
                   title={item.name}
                 >
                   {item.name}
                 </h3>
-                <p className="text-xs text-slate-400">
+                <p className="mt-0.5 text-xs text-slate-400">
                   {item.first_air_date ? item.first_air_date.slice(0, 4) : esPeli ? 'Película' : 'Serie'}
                 </p>
               </div>
@@ -750,25 +834,28 @@ export default function Home() {
                 className="relative mt-2"
               >
                 <button
-                  onClick={() => {
+                 onClick={() => {
                     if (!user) return setShowAuth(true);
-                    if (!abierto && !esPeli) asegurarTemporadas(item.id);
+                    if (!abierto && !esPeli) {
+                      asegurarTemporadas(item.id);
+                      cargarNotasSerie(item.id);
+                    }
                     setMenuAbierto(abierto ? null : claveMenu);
                   }}
-                  className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                  className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-xs font-bold shadow-sm transition active:scale-[0.98] ${
                     !infoUsuario
-                      ? 'border-slate-800 bg-slate-900 text-slate-200 hover:border-indigo-500/50 hover:bg-slate-800'
+                      ? 'border-indigo-500/40 bg-indigo-600/20 text-indigo-200 hover:border-indigo-400 hover:bg-indigo-600 hover:text-white hover:shadow-md hover:shadow-indigo-600/25'
                       : infoUsuario.status === 'watching'
-                      ? 'border-indigo-500/40 bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30'
+                      ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/25 hover:bg-indigo-500'
                       : infoUsuario.status === 'completed'
-                      ? 'border-emerald-500/40 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30'
-                      : 'border-amber-500/40 bg-amber-600/20 text-amber-300 hover:bg-amber-600/30'
+                      ? 'border-emerald-400/60 bg-emerald-600 text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-500'
+                      : 'border-amber-400/60 bg-amber-600 text-white shadow-md shadow-amber-600/25 hover:bg-amber-500'
                   }`}
                 >
                   <span className="flex items-center gap-1.5 truncate">
                     {!infoUsuario && (
                       <>
-                        <Plus className="h-3.5 w-3.5 text-indigo-400" />
+                        <Plus className="h-3.5 w-3.5 shrink-0" />
                         Añadir a mi lista
                       </>
                     )}
@@ -898,9 +985,12 @@ export default function Home() {
                             const siguienteEp = infoUsuario.current_episode + 1;
                             if (siguienteEp <= maxEpisodiosTemp) {
                               guardarEnNube(item, 'watching', infoUsuario.rating, tempActual, siguienteEp);
+                              registrarEpisodioVisto(item, tempActual, siguienteEp);
                             } else if (mapaTemps[tempActual + 1]) {
                               guardarEnNube(item, 'watching', infoUsuario.rating, tempActual + 1, 1);
+                              registrarEpisodioVisto(item, tempActual + 1, 1);
                             } else {
+                              registrarEpisodioVisto(item, tempActual, infoUsuario.current_episode);
                               guardarEnNube(item, 'completed', infoUsuario.rating, tempActual, infoUsuario.current_episode);
                               setMenuAbierto(null);
                             }
@@ -910,6 +1000,53 @@ export default function Home() {
                           <Plus className="h-3 w-3" />
                           Siguiente episodio
                         </button>
+
+                        <div className="flex items-center justify-between border-t border-slate-800/90 pt-1.5">
+                          <span className="text-[10px] font-medium text-slate-400">
+                            Nota Ep {infoUsuario.current_episode}:
+                          </span>
+                          <div className="flex gap-0.5">
+                            {[1, 2, 3, 4, 5].map((estrellaEp) => {
+                              const claveEp = `${item.id}-${tempActual}-${infoUsuario.current_episode}`;
+                              const notaActualEp = Number(notasEpisodiosMap[claveEp] ?? 0);
+                              const nuevaNotaEp = notaActualEp === estrellaEp ? 0 : estrellaEp;
+                              return (
+                                <button
+                                  key={estrellaEp}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setNotasEpisodiosMap((prev) => ({
+                                      ...prev,
+                                      [claveEp]: nuevaNotaEp,
+                                    }));
+                                    registrarEpisodioVisto(
+                                      item,
+                                      tempActual,
+                                      infoUsuario.current_episode,
+                                      nuevaNotaEp
+                                    );
+                                    mostrarToast(
+                                      nuevaNotaEp === 0
+                                        ? `${item.name} · T${tempActual} E${infoUsuario.current_episode} · Nota borrada`
+                                        : `${item.name} · T${tempActual} E${infoUsuario.current_episode} ★${nuevaNotaEp}`
+                                    );
+                                  }}
+                                  className="p-0.5 text-slate-600 transition hover:scale-110 hover:text-amber-400"
+                                  title={nuevaNotaEp === 0 ? 'Quitar puntuación del episodio' : `Puntuar episodio con ${estrellaEp}`}
+                                >
+                                  <Star
+                                    className={`h-3.5 w-3.5 ${
+                                      notaActualEp >= estrellaEp
+                                        ? 'fill-amber-400 text-amber-400'
+                                        : ''
+                                    }`}
+                                  />
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
                     )}
 
@@ -943,28 +1080,35 @@ export default function Home() {
                     <div className="mt-1 flex items-center justify-between border-t border-slate-800 px-2.5 pt-2 pb-1">
                       <span className="text-[11px] text-slate-400">Nota:</span>
                       <div className="flex gap-0.5">
-                        {[1, 2, 3, 4, 5].map((estrella) => (
-                          <button
-                            key={estrella}
-                            onClick={() => {
-                              guardarEnNube(
-                                item,
-                                infoUsuario?.status || 'completed',
-                                estrella
-                              );
-                              setMenuAbierto(null);
-                            }}
-                            className="p-0.5 text-slate-600 hover:text-amber-400"
-                          >
-                            <Star
-                              className={`h-3.5 w-3.5 ${
-                                (infoUsuario?.rating || 0) >= estrella
-                                  ? 'fill-amber-400 text-amber-400'
-                                  : ''
-                              }`}
-                            />
-                          </button>
-                        ))}
+                        {[1, 2, 3, 4, 5].map((estrella) => {
+                          const notaActual = Number(infoUsuario?.rating ?? 0);
+                          const nuevaNota = notaActual === estrella ? 0 : estrella;
+                          return (
+                            <button
+                              key={estrella}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                guardarEnNube(
+                                  item,
+                                  infoUsuario?.status || 'completed',
+                                  nuevaNota
+                                );
+                                setMenuAbierto(null);
+                              }}
+                              className="p-0.5 text-slate-600 transition hover:scale-110 hover:text-amber-400"
+                              title={nuevaNota === 0 ? 'Quitar puntuación' : `Puntuar con ${estrella}`}
+                            >
+                              <Star
+                                className={`h-3.5 w-3.5 ${
+                                  notaActual >= estrella
+                                    ? 'fill-amber-400 text-amber-400'
+                                    : ''
+                                }`}
+                              />
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -992,7 +1136,7 @@ export default function Home() {
       onClick={() => menuAbierto && setMenuAbierto(null)}
       className="min-h-screen bg-slate-950 pb-20 text-slate-100 md:pb-8"
     >
-      <header className="sticky top-0 z-30 border-b border-slate-800 bg-slate-950/85 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-slate-800/90 bg-slate-950/85 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3.5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center justify-between">
             <div
@@ -1000,15 +1144,13 @@ export default function Home() {
                 setVista('explorar');
                 limpiarFiltros();
               }}
-              className="flex cursor-pointer items-center gap-2.5"
+              className="flex cursor-pointer items-center gap-3"
             >
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-600 text-white shadow-lg shadow-indigo-600/30">
-                <img
-                  src="/logoplotcorn.jpeg"
-                  alt="Logo"
-                  className="h-10 w-10 rounded-xl object-cover shadow-lg"
-                />
-              </div>
+              <img
+                src="/logoplotcorn.jpeg"
+                alt="Logo"
+                className="h-10 w-10 rounded-xl border border-indigo-500/40 object-cover shadow-lg shadow-indigo-950/40"
+              />
               <div>
                 <h1 className="text-xl font-bold tracking-tight text-white">PlotCorn</h1>
                 <p className="text-xs text-slate-400">Toda historia tiene un Twist</p>
@@ -1022,7 +1164,7 @@ export default function Home() {
                   <button
                     onClick={() => setVista('comunidad')}
                     title="Solicitudes y mensajes"
-                    className="relative rounded-lg bg-slate-900 p-2 text-slate-300 transition hover:text-indigo-400"
+                    className="relative rounded-xl border border-slate-700 bg-slate-900 p-2 text-slate-200 shadow-sm transition hover:border-indigo-400 hover:text-indigo-300"
                   >
                     <Bell className="h-4 w-4" />
                     {notificacionesCount > 0 && (
@@ -1033,13 +1175,13 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => setPerfilActivoId(user.id)}
-                    className="rounded-full bg-indigo-600/20 px-3 py-1.5 text-xs font-bold text-indigo-300"
+                    className="rounded-full border border-indigo-400/50 bg-indigo-600/25 px-3 py-1.5 text-xs font-bold text-indigo-200 shadow-sm transition hover:bg-indigo-600 hover:text-white"
                   >
                     @{username || 'usuario'}
                   </button>
                   <button
                     onClick={() => supabase.auth.signOut()}
-                    className="rounded-lg bg-slate-900 p-2 text-slate-400 hover:text-red-400"
+                    className="rounded-xl border border-slate-700 bg-slate-900 p-2 text-slate-300 transition hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300"
                   >
                     <LogOut className="h-4 w-4" />
                   </button>
@@ -1047,7 +1189,7 @@ export default function Home() {
               ) : (
                 <button
                   onClick={() => setShowAuth(true)}
-                  className="flex items-center gap-1 rounded-full bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white"
+                  className="flex items-center gap-1.5 rounded-full border border-indigo-400/50 bg-indigo-600 px-4 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/35 transition hover:bg-indigo-500"
                 >
                   <User className="h-3.5 w-3.5" />
                   Entrar
@@ -1057,13 +1199,13 @@ export default function Home() {
           </div>
 
           <div className="relative w-full lg:w-80">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-indigo-400" />
             <input
               type="text"
               value={query}
               onChange={(e) => handleSearch(e.target.value)}
               placeholder="Buscar series, pelis, realities..."
-              className="w-full rounded-full border border-slate-800 bg-slate-900 py-2 pl-10 pr-4 text-sm text-white placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+              className="w-full rounded-full border border-slate-700 bg-slate-900 py-2 pl-10 pr-4 text-sm text-white placeholder-slate-400 shadow-inner transition focus:border-indigo-400 focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
             />
           </div>
 
@@ -1071,8 +1213,10 @@ export default function Home() {
           <div className="hidden items-center gap-2 md:flex">
             <button
               onClick={() => setVista('explorar')}
-              className={`rounded-full px-4 py-2 text-xs font-semibold transition ${
-                vista === 'explorar' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+              className={`rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+                vista === 'explorar'
+                  ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
               }`}
             >
               Explorar
@@ -1080,8 +1224,10 @@ export default function Home() {
 
             <button
               onClick={() => setVista('comunidad')}
-              className={`flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition ${
-                vista === 'comunidad' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+              className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+                vista === 'comunidad'
+                  ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
               }`}
             >
               <Users className="h-3.5 w-3.5" />
@@ -1090,8 +1236,10 @@ export default function Home() {
 
             <button
               onClick={() => (user ? setVista('biblioteca') : setShowAuth(true))}
-              className={`flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold transition ${
-                vista === 'biblioteca' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+              className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+                vista === 'biblioteca'
+                  ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
               }`}
             >
               <Bookmark className="h-3.5 w-3.5" />
@@ -1103,7 +1251,7 @@ export default function Home() {
                 <button
                   onClick={() => setVista('comunidad')}
                   title="Solicitudes y mensajes"
-                  className="relative rounded-lg bg-slate-900 p-2 text-slate-300 transition hover:text-indigo-400"
+                  className="relative rounded-xl border border-slate-700 bg-slate-900 p-2 text-slate-200 shadow-sm transition hover:border-indigo-400 hover:text-indigo-300"
                 >
                   <Bell className="h-4 w-4" />
                   {notificacionesCount > 0 && (
@@ -1115,14 +1263,14 @@ export default function Home() {
                 <button
                   onClick={() => setPerfilActivoId(user.id)}
                   title="Ver y editar mi perfil"
-                  className="text-xs font-medium text-indigo-400 hover:underline"
+                  className="rounded-xl border border-indigo-500/40 bg-indigo-600/20 px-3 py-1.5 text-xs font-bold text-indigo-300 transition hover:bg-indigo-600 hover:text-white"
                 >
                   @{username || 'usuario'}
                 </button>
                 <button
                   onClick={() => supabase.auth.signOut()}
                   title="Cerrar sesión"
-                  className="rounded-lg bg-slate-900 p-2 text-slate-400 hover:text-red-400"
+                  className="rounded-xl border border-slate-700 bg-slate-900 p-2 text-slate-300 transition hover:border-red-500/60 hover:bg-red-500/15 hover:text-red-300"
                 >
                   <LogOut className="h-4 w-4" />
                 </button>
@@ -1130,7 +1278,7 @@ export default function Home() {
             ) : (
               <button
                 onClick={() => setShowAuth(true)}
-                className="flex items-center gap-1.5 rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500"
+                className="flex items-center gap-1.5 rounded-full border border-indigo-400/50 bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/35 transition hover:bg-indigo-500"
               >
                 <User className="h-3.5 w-3.5" />
                 Entrar
@@ -1153,25 +1301,31 @@ export default function Home() {
         ) : (
           <>
             <div className="mb-5 flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-indigo-400" />
-                <h2 className="text-xl font-semibold">{tituloSeccion()}</h2>
+              <div className="flex items-center gap-2.5">
+                <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-400">
+                  <Sparkles className="h-4 w-4" />
+                </span>
+                <h2 className="text-xl font-bold tracking-tight text-white">{tituloSeccion()}</h2>
               </div>
 
               {mostrarFiltrosTipo && (
-                <div className="flex flex-wrap gap-1 rounded-xl border border-slate-800 bg-slate-900 p-1">
+                <div className="flex flex-wrap gap-1.5 rounded-2xl border border-slate-700 bg-slate-900 p-1.5 shadow-md">
                   <button
                     onClick={() => cambiarFiltroTipo('all')}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                      filtroTipo === 'all' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                      filtroTipo === 'all'
+                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/35'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     Todo
                   </button>
                   <button
                     onClick={() => cambiarFiltroTipo('tv')}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                      filtroTipo === 'tv' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                      filtroTipo === 'tv'
+                        ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/35'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Tv className="h-3.5 w-3.5" />
@@ -1179,8 +1333,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => cambiarFiltroTipo('movie')}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                      filtroTipo === 'movie' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                      filtroTipo === 'movie'
+                        ? 'bg-rose-600 text-white shadow-md shadow-rose-600/35'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Film className="h-3.5 w-3.5" />
@@ -1188,8 +1344,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => cambiarFiltroTipo('documentary')}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                      filtroTipo === 'documentary' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                      filtroTipo === 'documentary'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/35'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Clapperboard className="h-3.5 w-3.5" />
@@ -1197,8 +1355,10 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() => cambiarFiltroTipo('reality')}
-                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                      filtroTipo === 'reality' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                      filtroTipo === 'reality'
+                        ? 'bg-amber-600 text-white shadow-md shadow-amber-600/35'
+                        : 'bg-slate-950/70 text-slate-300 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Flame className="h-3.5 w-3.5" />
@@ -1211,9 +1371,9 @@ export default function Home() {
             {vista === 'explorar' && (
               <div className="space-y-8">
                 <div>
-                  <div className="mb-6 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3">
+                  <div className="mb-6 flex flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-slate-800 bg-slate-900/75 p-3 shadow-md">
                     <div className="flex flex-wrap items-center gap-2.5">
-                      <div className="flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-400">
+                      <div className="flex items-center gap-1.5 px-1 text-xs font-bold text-slate-300">
                         <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-400" />
                         <span>Filtrar:</span>
                       </div>
@@ -1221,10 +1381,10 @@ export default function Home() {
                       <select
                         value={plataformaId}
                         onChange={(e) => cambiarPlataforma(e.target.value)}
-                        className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
+                        className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-bold shadow-sm transition focus:outline-none ${
                           plataformaId
-                            ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
-                            : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
+                            ? 'border-indigo-400 bg-indigo-600 text-white shadow-indigo-600/25'
+                            : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-indigo-500/60 hover:bg-slate-800'
                         }`}
                       >
                         {PLATAFORMAS_ES.map((p) => (
@@ -1237,10 +1397,10 @@ export default function Home() {
                       <select
                         value={generoId}
                         onChange={(e) => cambiarGenero(e.target.value)}
-                        className={`rounded-xl border px-3 py-1.5 text-xs font-semibold transition focus:outline-none ${
+                        className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-bold shadow-sm transition focus:outline-none ${
                           generoId
-                            ? 'border-indigo-500 bg-indigo-600/20 text-indigo-200'
-                            : 'border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700'
+                            ? 'border-indigo-400 bg-indigo-600 text-white shadow-indigo-600/25'
+                            : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-indigo-500/60 hover:bg-slate-800'
                         }`}
                       >
                         {GENEROS_ES.map((g) => (
@@ -1253,7 +1413,7 @@ export default function Home() {
                       {hayFiltrosActivos && (
                         <button
                           onClick={limpiarFiltros}
-                          className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:border-red-500/40 hover:text-red-400"
+                          className="flex items-center gap-1 rounded-xl border border-red-500/40 bg-red-500/15 px-3 py-1.5 text-xs font-bold text-red-300 transition hover:bg-red-600 hover:text-white"
                         >
                           <RotateCcw className="h-3 w-3" />
                           Limpiar
@@ -1261,15 +1421,13 @@ export default function Home() {
                       )}
                     </div>
 
-                    {user && totalBiblioteca > 0 && (
-                      <button
+                    <button
                       onClick={() => setMostrarRuleta(true)}
-                      className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500"
+                      className="flex items-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-indigo-600/35 transition hover:bg-indigo-500 active:scale-[0.98]"
                     >
-                      <Dices className="h-3.5 w-3.5" />
+                      <Dices className="h-4 w-4" />
                       ¿Qué veo hoy?
                     </button>
-                    )}
                   </div>
 
                   {loading ? (
@@ -1283,7 +1441,7 @@ export default function Home() {
                       <p className="text-slate-400">No hay resultados con esa combinación de filtros.</p>
                       <button
                         onClick={limpiarFiltros}
-                        className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
+                        className="mt-4 rounded-xl border border-indigo-400/50 bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-indigo-600/30 hover:bg-indigo-500"
                       >
                         Restablecer filtros
                       </button>
@@ -1303,16 +1461,17 @@ export default function Home() {
               </div>
             )}
 
+            
             {/* VISTA MI BIBLIOTECA */}
             {vista === 'biblioteca' && user && (
-              <>
-                <div className="mb-6 flex flex-wrap gap-2 border-b border-slate-800 pb-4">
+              <div className="space-y-6">
+                <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-800 bg-slate-900/65 p-2 shadow-sm">
                   <button
                     onClick={() => setTabBiblioteca('catalogo')}
-                    className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                    className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'catalogo'
-                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
-                        : 'bg-slate-900 text-slate-400 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Library className="h-3.5 w-3.5" />
@@ -1321,10 +1480,10 @@ export default function Home() {
 
                   <button
                     onClick={() => setTabBiblioteca('colecciones')}
-                    className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                    className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'colecciones'
-                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
-                        : 'bg-slate-900 text-slate-400 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Folder className="h-3.5 w-3.5" />
@@ -1333,10 +1492,10 @@ export default function Home() {
 
                   <button
                     onClick={() => setTabBiblioteca('estrenos')}
-                    className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                    className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'estrenos'
-                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
-                        : 'bg-slate-900 text-slate-400 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <Calendar className="h-3.5 w-3.5" />
@@ -1345,10 +1504,10 @@ export default function Home() {
 
                   <button
                     onClick={() => setTabBiblioteca('estadisticas')}
-                    className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                    className={`flex items-center gap-1.5 rounded-xl border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                       tabBiblioteca === 'estadisticas'
-                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
-                        : 'bg-slate-900 text-slate-400 hover:text-white'
+                        ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                        : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:bg-slate-800 hover:text-white'
                     }`}
                   >
                     <BarChart3 className="h-3.5 w-3.5" />
@@ -1373,7 +1532,7 @@ export default function Home() {
                   <div className="space-y-8">
                     <form
                       onSubmit={handleCrearColeccionSubmit}
-                      className="flex flex-col gap-2.5 rounded-3xl border border-slate-800 bg-slate-900/50 p-4 sm:flex-row sm:items-center"
+                      className="flex flex-col gap-2.5 rounded-3xl border border-slate-800 bg-slate-900/70 p-4 shadow-md sm:flex-row sm:items-center"
                     >
                       <div className="flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-wider text-indigo-400">
                         <FolderPlus className="h-4 w-4" />
@@ -1387,7 +1546,7 @@ export default function Home() {
                         value={nuevaColNombre}
                         onChange={(e) => setNuevaColNombre(e.target.value)}
                         placeholder="Nombre (ej. Maratón de finde)"
-                        className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
                       />
 
                       <input
@@ -1396,16 +1555,16 @@ export default function Home() {
                         value={nuevaColDesc}
                         onChange={(e) => setNuevaColDesc(e.target.value)}
                         placeholder="Descripción opcional..."
-                        className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                        className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
                       />
 
                       <button
                         type="button"
                         onClick={() => setNuevaColPublica(!nuevaColPublica)}
-                        className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                        className={`flex items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2 text-xs font-bold transition ${
                           nuevaColPublica
-                            ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                            : 'border-slate-700 bg-slate-950 text-slate-400'
+                            ? 'border-emerald-400/50 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30'
+                            : 'border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800'
                         }`}
                       >
                         {nuevaColPublica ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
@@ -1415,7 +1574,7 @@ export default function Home() {
                       <button
                         type="submit"
                         disabled={creandoCol || !nuevaColNombre.trim()}
-                        className="flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
+                        className="flex items-center justify-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-4 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500 disabled:opacity-50"
                       >
                         <Plus className="h-3.5 w-3.5" />
                         Crear colección
@@ -1423,9 +1582,9 @@ export default function Home() {
                     </form>
 
                     {colecciones.length === 0 ? (
-                      <div className="rounded-3xl border border-slate-800 bg-slate-900/40 p-12 text-center">
-                        <p className="text-slate-400">
-                          Aún no has creado ninguna colección. Crea una arriba y añade títulos desde cualquier tarjeta.
+                      <div className="rounded-3xl border border-slate-800 bg-slate-900/45 p-12 text-center">
+                        <p className="text-sm text-slate-400">
+                          Aún no has creado ninguna colección. Crea una arriba y añade títulos desde el menú de cualquier tarjeta.
                         </p>
                       </div>
                     ) : (
@@ -1453,11 +1612,11 @@ export default function Home() {
                         return (
                           <section
                             key={col.id}
-                            className="rounded-3xl border border-indigo-500/30 bg-slate-900/45 p-5 shadow-lg"
+                            className="rounded-3xl border border-indigo-500/30 bg-gradient-to-br from-slate-900/75 via-slate-900/50 to-indigo-950/15 p-5 shadow-lg sm:p-6"
                           >
-                            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3.5">
+                            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/90 pb-4">
                               <div className="flex items-center gap-3">
-                                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
+                                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-indigo-500/30 bg-slate-950">
                                   <Folder className="h-4 w-4 text-indigo-400" />
                                 </div>
                                 <div>
@@ -1477,10 +1636,10 @@ export default function Home() {
                                 <button
                                   type="button"
                                   onClick={() => handleToggleVisibilidadColeccion(col.id, !col.is_public)}
-                                  className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+                                  className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
                                     col.is_public
-                                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20'
-                                      : 'border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20'
+                                      ? 'border-emerald-400/40 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30'
+                                      : 'border-amber-400/40 bg-amber-600/20 text-amber-300 hover:bg-amber-600/30'
                                   }`}
                                   title="Cambiar privacidad"
                                 >
@@ -1502,7 +1661,7 @@ export default function Home() {
                                       handleEliminarColeccion(col.id);
                                     }
                                   }}
-                                  className="rounded-xl border border-slate-800 bg-slate-950 p-2 text-slate-400 transition hover:border-red-500/40 hover:text-red-400"
+                                  className="rounded-xl border border-red-500/30 bg-red-500/10 p-2 text-red-300 transition hover:border-red-500 hover:bg-red-600 hover:text-white"
                                   title="Eliminar colección"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -1527,27 +1686,27 @@ export default function Home() {
                 {tabBiblioteca === 'catalogo' && (
                   <div className="space-y-8">
                     {totalBiblioteca > 0 && (
-                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-3.5 shadow-md sm:flex-row sm:items-center sm:justify-between">
                         <div className="relative flex-1 sm:max-w-xs">
-                          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                          <Search className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-indigo-400" />
                           <input
                             type="text"
                             value={busquedaBiblio}
                             onChange={(e) => setBusquedaBiblio(e.target.value)}
                             placeholder="Filtrar en mi biblioteca..."
-                            className="w-full rounded-xl border border-slate-800 bg-slate-950 py-1.5 pl-9 pr-3 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                            className="w-full rounded-xl border border-slate-700 bg-slate-950 py-1.5 pl-9 pr-3 text-xs font-medium text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
                           />
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="flex items-center gap-1 text-xs text-slate-400">
+                          <span className="flex items-center gap-1 text-xs font-semibold text-slate-300">
                             <ArrowUpDown className="h-3.5 w-3.5 text-indigo-400" />
                             Ordenar:
                           </span>
                           <select
                             value={ordenBiblio}
                             onChange={(e) => setOrdenBiblio(e.target.value as OrdenBiblioteca)}
-                            className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-200 focus:border-indigo-500 focus:outline-none"
+                            className="cursor-pointer rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-bold text-slate-200 transition hover:border-indigo-500/60 focus:border-indigo-500 focus:outline-none"
                           >
                             <option value="recientes">Últimos actualizados</option>
                             <option value="nota">Mayor puntuación (★)</option>
@@ -1556,7 +1715,7 @@ export default function Home() {
 
                           <button
                             onClick={() => setMostrarRuleta(true)}
-                            className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500"
+                            className="flex items-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-md shadow-indigo-600/35 transition hover:bg-indigo-500 active:scale-[0.98]"
                           >
                             <Dices className="h-3.5 w-3.5" />
                             ¿Qué veo hoy?
@@ -1566,8 +1725,8 @@ export default function Home() {
                     )}
 
                     {bloquesCatalogo.every((b) => b.items.length === 0) ? (
-                      <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-12 text-center">
-                        <p className="text-slate-400">
+                      <div className="rounded-3xl border border-slate-800 bg-slate-900/45 p-12 text-center">
+                        <p className="text-sm text-slate-400">
                           {busquedaBiblio
                             ? `No hay coincidencias para "${busquedaBiblio}" en tu biblioteca.`
                             : 'No hay títulos guardados en esta categoría.'}
@@ -1581,7 +1740,7 @@ export default function Home() {
                               setFiltroTipo('all');
                             }
                           }}
-                          className="mt-4 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
+                          className="mt-4 rounded-xl border border-indigo-400/50 bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500"
                         >
                           {busquedaBiblio ? 'Limpiar búsqueda' : 'Explorar catálogo'}
                         </button>
@@ -1590,35 +1749,44 @@ export default function Home() {
                       <div className="space-y-8">
                         {bloquesCatalogo
                           .filter((bloque) => bloque.items.length > 0)
-                          .map((bloque) => (
-                            <section
-                              key={bloque.key}
-                              className={`rounded-3xl border ${bloque.acentoBorder} bg-slate-900/45 p-5 shadow-lg`}
-                            >
-                              <div className="mb-5 flex items-center justify-between border-b border-slate-800/80 pb-3.5">
-                                <div className="flex items-center gap-3">
-                                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-800 bg-slate-950">
-                                    {bloque.icono}
-                                  </div>
-                                  <div>
-                                    <div className="flex items-center gap-2">
-                                      <h3 className="text-base font-bold text-white">
-                                        {bloque.titulo}
-                                      </h3>
-                                      <span
-                                        className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${bloque.acentoBadge}`}
-                                      >
-                                        {bloque.items.length}
-                                      </span>
+                          .map((bloque) => {
+                            const degradadoBloque =
+                              bloque.key === 'watching'
+                                ? 'from-slate-900/80 via-slate-900/50 to-indigo-950/20'
+                                : bloque.key === 'watchlist'
+                                ? 'from-slate-900/80 via-slate-900/50 to-amber-950/15'
+                                : 'from-slate-900/80 via-slate-900/50 to-emerald-950/15';
+
+                            return (
+                              <section
+                                key={bloque.key}
+                                className={`rounded-3xl border ${bloque.acentoBorder} bg-gradient-to-br ${degradadoBloque} p-5 shadow-lg sm:p-6`}
+                              >
+                                <div className="mb-5 flex items-center justify-between border-b border-slate-800/90 pb-4">
+                                  <div className="flex items-center gap-3">
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-slate-800 bg-slate-950 shadow-sm">
+                                      {bloque.icono}
                                     </div>
-                                    <p className="text-xs text-slate-400">{bloque.subtitulo}</p>
+                                    <div>
+                                      <div className="flex items-center gap-2">
+                                        <h3 className="text-base font-bold text-white">
+                                          {bloque.titulo}
+                                        </h3>
+                                        <span
+                                          className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${bloque.acentoBadge}`}
+                                        >
+                                          {bloque.items.length}
+                                        </span>
+                                      </div>
+                                      <p className="text-xs text-slate-400">{bloque.subtitulo}</p>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
 
-                              {renderGridTarjetas(bloque.items, `${bloque.key}-`)}
-                            </section>
-                          ))}
+                                {renderGridTarjetas(bloque.items, `${bloque.key}-`)}
+                              </section>
+                            );
+                          })}
                       </div>
                     )}
 
@@ -1631,18 +1799,20 @@ export default function Home() {
                     )}
                   </div>
                 )}
-              </>
+              </div>
             )}
           </>
         )}
       </main>
 
       {/* Barra de navegación inferior fija para pantallas móviles */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-md md:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-xl md:hidden">
         <button
           onClick={() => setVista('explorar')}
-          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
-            vista === 'explorar' ? 'text-indigo-400' : 'text-slate-400'
+          className={`flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold transition ${
+            vista === 'explorar'
+              ? 'bg-indigo-600/20 text-indigo-300 shadow-inner'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
           <Compass className="h-5 w-5" />
@@ -1651,8 +1821,10 @@ export default function Home() {
 
         <button
           onClick={() => setVista('comunidad')}
-          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
-            vista === 'comunidad' ? 'text-indigo-400' : 'text-slate-400'
+          className={`flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold transition ${
+            vista === 'comunidad'
+              ? 'bg-indigo-600/20 text-indigo-300 shadow-inner'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
           <Users className="h-5 w-5" />
@@ -1661,8 +1833,10 @@ export default function Home() {
 
         <button
           onClick={() => (user ? setVista('biblioteca') : setShowAuth(true))}
-          className={`flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold transition ${
-            vista === 'biblioteca' ? 'text-indigo-400' : 'text-slate-400'
+          className={`flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold transition ${
+            vista === 'biblioteca'
+              ? 'bg-indigo-600/20 text-indigo-300 shadow-inner'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
           <Bookmark className="h-5 w-5" />
@@ -1671,7 +1845,7 @@ export default function Home() {
 
         <button
           onClick={() => (user ? setPerfilActivoId(user.id) : setShowAuth(true))}
-          className="flex flex-col items-center gap-1 rounded-xl px-3 py-1 text-[11px] font-semibold text-slate-400 transition hover:text-white"
+          className="flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:bg-slate-900 hover:text-white"
         >
           <User className="h-5 w-5" />
           <span>{user ? 'Perfil' : 'Entrar'}</span>
