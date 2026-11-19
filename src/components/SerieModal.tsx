@@ -45,7 +45,6 @@ export default function SerieModal({
   const [similares, setSimilares] = useState<MediaTMDB[]>([]);
   const [copiadoEnlace, setCopiadoEnlace] = useState(false);
 
-  // Gestión de temporadas y episodios (solo series)
   const [temporadaSeleccionada, setTemporadaSeleccionada] = useState<number>(
     estadoActual?.current_season || 1
   );
@@ -54,7 +53,6 @@ export default function SerieModal({
     Record<string, { rating: number; review: string }>
   >({});
 
-  // Comentarios de la comunidad sobre este título
   const [comentarios, setComentarios] = useState<any[]>([]);
   const [nuevoComentario, setNuevoComentario] = useState('');
   const [enviandoCom, setEnviandoCom] = useState(false);
@@ -319,76 +317,79 @@ export default function SerieModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md sm:p-5"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-2 sm:p-5 backdrop-blur-md"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
+        className="max-h-[93vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
       >
-        {/* Cabecera con fondo panorámico */}
-        <div className="relative shrink-0 border-b border-slate-800 bg-slate-900">
+        {/* Cabecera compacta en móvil y amplia en escritorio */}
+        <div className="relative border-b border-slate-800 bg-slate-900">
           {detalle?.backdrop_path && (
             <img
               src={`https://image.tmdb.org/t/p/w1280${detalle.backdrop_path}`}
               alt={titulo}
-              className="absolute inset-0 h-full w-full object-cover opacity-25"
+              className="absolute inset-0 h-full w-full object-cover opacity-20"
             />
           )}
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-slate-950/40" />
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/85 to-slate-950/45" />
 
           <button
             onClick={onClose}
-            className="absolute right-4 top-4 z-10 rounded-full bg-slate-950/80 p-2 text-slate-300 backdrop-blur-md transition hover:bg-slate-800 hover:text-white"
+            aria-label="Cerrar ficha"
+            className="absolute right-3 top-3 z-10 rounded-full bg-slate-950/85 p-2 text-slate-300 backdrop-blur-md transition hover:bg-slate-800 hover:text-white sm:right-4 sm:top-4"
           >
-            <X className="h-5 w-5" />
+            <X className="h-4 w-4 sm:h-5 sm:w-5" />
           </button>
 
-          <div className="relative flex flex-col gap-5 p-6 sm:flex-row sm:items-end">
+          <div className="relative flex flex-row items-start gap-3.5 p-4 pr-12 sm:items-end sm:gap-5 sm:p-6 sm:pr-6">
             <img
               src={getPosterUrl(detalle?.poster_path || mediaActiva.poster_path)}
               alt={titulo}
-              className="h-44 w-32 shrink-0 rounded-2xl border border-slate-700/80 object-cover shadow-2xl"
+              className="h-28 w-20 shrink-0 rounded-xl border border-slate-700/80 object-cover shadow-xl sm:h-44 sm:w-32 sm:rounded-2xl sm:shadow-2xl"
             />
 
-            <div className="min-w-0 flex-1 space-y-2.5">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0 flex-1 space-y-2 sm:space-y-2.5">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase ${
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase sm:px-2.5 sm:text-[11px] ${
                     esPeli
                       ? 'bg-rose-500/20 text-rose-300'
                       : 'bg-indigo-500/20 text-indigo-300'
                   }`}
                 >
-                  {esPeli ? <Film className="h-3 w-3" /> : <Tv className="h-3 w-3" />}
+                  {esPeli ? <Film className="h-2.5 w-2.5 sm:h-3 sm:w-3" /> : <Tv className="h-2.5 w-2.5 sm:h-3 sm:w-3" />}
                   {esPeli ? 'Película' : 'Serie'}
                 </span>
 
                 {anio && (
-                  <span className="flex items-center gap-1 text-xs text-slate-300">
-                    <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="flex items-center gap-1 text-[11px] text-slate-300 sm:text-xs">
+                    <Calendar className="h-3 w-3 text-slate-400 sm:h-3.5 sm:w-3.5" />
                     {anio}
                   </span>
                 )}
 
                 {duracion && (
-                  <span className="flex items-center gap-1 text-xs text-slate-300">
-                    <Clock className="h-3.5 w-3.5 text-slate-400" />
+                  <span className="flex items-center gap-1 text-[11px] text-slate-300 sm:text-xs">
+                    <Clock className="h-3 w-3 text-slate-400 sm:h-3.5 sm:w-3.5" />
                     {duracion}
                   </span>
                 )}
 
                 {(detalle?.vote_average || mediaActiva.vote_average) > 0 && (
-                  <span className="flex items-center gap-1 rounded-full bg-amber-500/20 px-2.5 py-0.5 text-xs font-bold text-amber-400">
-                    <Star className="h-3.5 w-3.5 fill-amber-400" />
-                    {(detalle?.vote_average || mediaActiva.vote_average).toFixed(1)} TMDB
+                  <span className="flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[11px] font-bold text-amber-400 sm:px-2.5 sm:text-xs">
+                    <Star className="h-3 w-3 fill-amber-400 sm:h-3.5 sm:w-3.5" />
+                    {(detalle?.vote_average || mediaActiva.vote_average).toFixed(1)}
                   </span>
                 )}
               </div>
 
-              <h2 className="text-2xl font-bold leading-tight text-white">{titulo}</h2>
+              <h2 className="text-lg font-bold leading-snug text-white sm:text-2xl sm:leading-tight">
+                {titulo}
+              </h2>
 
               {detalle?.genres && detalle.genres.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="hidden flex-wrap gap-1.5 sm:flex">
                   {detalle.genres.map((g: any) => (
                     <span
                       key={g.id}
@@ -400,45 +401,45 @@ export default function SerieModal({
                 </div>
               )}
 
-              {/* Controles de estado, nota, Tráiler y Compartir */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              {/* Controles compactos en móvil */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5 sm:gap-2 sm:pt-1">
                 <button
                   onClick={() => onUpdateEstado('watching', estadoActual?.rating || 0)}
-                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'watching'
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-indigo-500'
                   }`}
                 >
-                  <Eye className="h-3.5 w-3.5" />
+                  <Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Viendo
                 </button>
 
                 <button
                   onClick={() => onUpdateEstado('completed', estadoActual?.rating || 0)}
-                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'completed'
                       ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-emerald-500'
                   }`}
                 >
-                  <Check className="h-3.5 w-3.5" />
+                  <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   {esPeli ? 'Vista' : 'Terminada'}
                 </button>
 
                 <button
                   onClick={() => onUpdateEstado('watchlist', estadoActual?.rating || 0)}
-                  className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold transition ${
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'watchlist'
                       ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-amber-500'
                   }`}
                 >
-                  <Clock className="h-3.5 w-3.5" />
+                  <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Pendiente
                 </button>
 
-                <div className="flex items-center gap-1 rounded-xl border border-slate-800 bg-slate-900/90 px-2.5 py-1.5">
+                <div className="flex items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 sm:gap-1 sm:rounded-xl sm:px-2.5 sm:py-1.5">
                   {[1, 2, 3, 4, 5].map((num) => (
                     <button
                       key={num}
@@ -448,7 +449,7 @@ export default function SerieModal({
                       className="text-slate-600 transition hover:scale-110 hover:text-amber-400"
                     >
                       <Star
-                        className={`h-3.5 w-3.5 ${
+                        className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
                           (estadoActual?.rating || 0) >= num
                             ? 'fill-amber-400 text-amber-400'
                             : ''
@@ -461,25 +462,25 @@ export default function SerieModal({
                 {trailerKey && (
                   <button
                     onClick={() => setMostrarTrailer(!mostrarTrailer)}
-                    className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-1.5 text-xs font-bold text-white shadow-lg shadow-rose-600/30 transition hover:bg-rose-500"
+                    className="flex items-center gap-1 rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-lg shadow-rose-600/30 transition hover:bg-rose-500 sm:gap-1.5 sm:rounded-xl sm:px-3.5 sm:py-1.5 sm:text-xs"
                   >
-                    <Play className="h-3.5 w-3.5 fill-white" />
-                    {mostrarTrailer ? 'Ocultar tráiler' : 'Ver tráiler'}
+                    <Play className="h-3 w-3 fill-white sm:h-3.5 sm:w-3.5" />
+                    {mostrarTrailer ? 'Ocultar' : 'Tráiler'}
                   </button>
                 )}
 
                 <button
                   onClick={compartirFicha}
-                  className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3 py-1.5 text-xs font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white"
+                  className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-[11px] font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs"
                 >
                   {copiadoEnlace ? (
                     <>
-                      <Check className="h-3.5 w-3.5 text-emerald-400" />
-                      ¡Enlace copiado!
+                      <Check className="h-3 w-3 text-emerald-400 sm:h-3.5 sm:w-3.5" />
+                      Copiado
                     </>
                   ) : (
                     <>
-                      <Share2 className="h-3.5 w-3.5 text-indigo-400" />
+                      <Share2 className="h-3 w-3 text-indigo-400 sm:h-3.5 sm:w-3.5" />
                       Compartir
                     </>
                   )}
@@ -489,8 +490,8 @@ export default function SerieModal({
           </div>
         </div>
 
-        {/* Cuerpo con desplazamiento */}
-        <div className="flex-1 space-y-6 overflow-y-auto p-6">
+        {/* Contenido principal con espacio cómodo en móvil */}
+        <div className="space-y-4 p-4 sm:space-y-6 sm:p-6">
           {cargando ? (
             <div className="py-12 text-center text-sm text-slate-400">
               Cargando ficha técnica...
@@ -533,7 +534,7 @@ export default function SerieModal({
                       No disponible actualmente en suscripción en España.
                     </p>
                   ) : (
-                    <div className="flex flex-wrap gap-2.5">
+                    <div className="flex flex-wrap gap-2">
                       {plataformasES.map((prov: any) => (
                         <div
                           key={prov.provider_id}
@@ -543,7 +544,7 @@ export default function SerieModal({
                           <img
                             src={`https://image.tmdb.org/t/p/original${prov.logo_path}`}
                             alt={prov.provider_name}
-                            className="h-6 w-6 rounded-lg object-cover"
+                            className="h-5 w-5 rounded-md object-cover sm:h-6 sm:w-6 sm:rounded-lg"
                           />
                           <span className="text-xs font-semibold text-slate-200">
                             {prov.provider_name}
