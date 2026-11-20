@@ -20,6 +20,13 @@ export interface SeguimientoExtraModal {
   rewatch_count?: number;
 }
 
+interface RegistroFechaHistorial {
+  id: string;
+  started_date?: string | null;
+  finished_date?: string | null;
+  watched_date: string;
+}
+
 interface SerieModalProps {
   serie: MediaTMDB;
   user: any;
@@ -44,6 +51,23 @@ interface SerieModalProps {
   onAbrirChatSala?: (media: MediaTMDB) => void;
   onClose: () => void;
   onRequireAuth: () => void;
+}
+
+function formatearFechaES(fechaStr?: string | null): string | null {
+  if (!fechaStr) return null;
+  const partes = fechaStr.slice(0, 10).split('-');
+  if (partes.length !== 3) return fechaStr;
+  const fechaObj = new Date(
+    Number(partes[0]),
+    Number(partes[1]) - 1,
+    Number(partes[2])
+  );
+  if (Number.isNaN(fechaObj.getTime())) return fechaStr;
+  return fechaObj.toLocaleDateString('es-ES', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
 }
 
 export default function SerieModal({
@@ -88,15 +112,10 @@ export default function SerieModal({
   const [cargando, setCargando] = useState(true);
   const [mediaActiva, setMediaActiva] = useState<MediaTMDB>(serie);
 
-  const [fechaInicioLocal, setFechaInicioLocal] = useState<string>(
-    estadoActual?.started_at || ''
-  );
-  const [fechaFinLocal, setFechaFinLocal] = useState<string>(
-    estadoActual?.finished_at || ''
-  );
-  const [vecesVistaLocal, setVecesVistaLocal] = useState<number>(
-    Number(estadoActual?.rewatch_count || 0)
-  );
+  const [fechaInicioInput, setFechaInicioInput] = useState<string>('');
+  const [fechaFinInput, setFechaFinInput] = useState<string>('');
+  const [historialFechas, setHistorialFechas] = useState<RegistroFechaHistorial[]>([]);
+  const [guardandoFechas, setGuardandoFechas] = useState<boolean>(false);
 
   const esPeli = mediaActiva.media_type === 'movie';
 
@@ -104,22 +123,42 @@ export default function SerieModal({
     setMediaActiva(serie);
     setMostrarTrailer(false);
     setMostrarChatSala(false);
+    setFechaInicioInput('');
+    setFechaFinInput('');
   }, [serie]);
 
   useEffect(() => {
-    setFechaInicioLocal(estadoActual?.started_at || '');
-    setFechaFinLocal(estadoActual?.finished_at || '');
-    setVecesVistaLocal(Number(estadoActual?.rewatch_count || 0));
-  }, [
-    mediaActiva.id,
-    mediaActiva.media_type,
-    estadoActual?.started_at,
-    estadoActual?.finished_at,
-    estadoActual?.rewatch_count,
-  ]);
+    cargarFichaCompleta();
+  }, [mediaActiva.id, mediaActiva.media_type, user?.id]);
 
   useEffect(() => {
-    cargarFichaCompleta();
+    if (!user || !mediaActiva.id) {
+      setHistorialFechas([]);
+      return;
+    }
+
+    let activo = true;
+    const tipo = mediaActiva.media_type || 'tv';
+
+    async function cargarFechasTitulo() {
+      const { data } = await supabase
+        .from('watch_history_dates')
+        .select('id, started_date, finished_date, watched_date, created_at')
+        .eq('user_id', user.id)
+        .eq('tmdb_id', mediaActiva.id)
+        .eq('media_type', tipo)
+        .order('created_at', { ascending: false });
+
+      if (activo && data) {
+        setHistorialFechas(data);
+      }
+    }
+
+    cargarFechasTitulo();
+
+    return () => {
+      activo = false;
+    };
   }, [mediaActiva.id, mediaActiva.media_type, user?.id]);
 
   useEffect(() => {
@@ -172,6 +211,54 @@ export default function SerieModal({
     setMediaComunidad(nuevaMedia);
   }
 
+  async function registrarFechaVistaHoy() {
+    if (!user || !mediaActiva.id) return;
+
+    const tipo = mediaActiva.media_type || 'tv';
+    const hoy = new Date().toISOString().slice(0, 10);
+
+    const yaRegistradaHoy = historialFechas.some(
+      (reg) => reg.watched_date === hoy && !reg.started_date && !reg.finished_date
+    );
+    if (yaRegistradaHoy) return;
+
+    const { data, error } = await supabase
+      .from('watch_history_dates')
+      .insert({
+        user_id: user.id,
+        tmdb_id: mediaActiva.id,
+        media_type: tipo,
+        started_date: null,
+        finished_date: hoy,
+        watched_date: hoy,
+      })
+      .select('id, started_date, finished_date, watched_date')
+      .single();
+
+    if (!error && data) {
+      const nuevaLista = [data, ...historialFechas];
+      setHistorialFechas(nuevaLista);
+
+      const extraActualizado: SeguimientoExtraModal = {
+        started_at: estadoActual?.started_at || null,
+        finished_at: hoy,
+        rewatch_count: nuevaLista.length,
+      };
+
+      if (onUpdateSeguimiento) {
+        onUpdateSeguimiento(extraActualizado);
+      } else {
+        onUpdateEstado(
+          'completed',
+          estadoActual?.rating || 0,
+          estadoActual?.current_season || 1,
+          estadoActual?.current_episode || 1,
+          extraActualizado
+        );
+      }
+    }
+  }
+
   function handleToggleEstado(nuevoEstado: EstadoMediaModal) {
     if (!user) return onRequireAuth();
     const estadoPrevio = estadoActual?.status;
@@ -179,14 +266,14 @@ export default function SerieModal({
 
     if (estadoPrevio === nuevoEstado && onEliminarEstado) {
       aplicarCambioEstadisticaOptimista(estadoPrevio, notaPrevia, null, notaPrevia);
-      setVecesVistaLocal(0);
       onEliminarEstado();
     } else {
       aplicarCambioEstadisticaOptimista(estadoPrevio, notaPrevia, nuevoEstado, notaPrevia);
-      if (nuevoEstado === 'completed') {
-        setVecesVistaLocal((prev) => Math.max(1, prev));
-      }
       onUpdateEstado(nuevoEstado, notaPrevia);
+
+      if (nuevoEstado === 'completed' && estadoPrevio !== 'completed') {
+        void registrarFechaVistaHoy();
+      }
     }
 
     setTimeout(() => cargarEstadisticasComunidad(), 400);
@@ -200,7 +287,6 @@ export default function SerieModal({
 
     if (nuevaNota === 0 && estadoPrevio === 'completed' && onEliminarEstado) {
       aplicarCambioEstadisticaOptimista(estadoPrevio, notaActual, null, 0);
-      setVecesVistaLocal(0);
       onEliminarEstado();
       setTimeout(() => cargarEstadisticasComunidad(), 400);
       return;
@@ -214,37 +300,77 @@ export default function SerieModal({
       estadoParaGuardar,
       nuevaNota
     );
-    if (estadoParaGuardar === 'completed') {
-      setVecesVistaLocal((prev) => Math.max(1, prev));
-    }
     onUpdateEstado(estadoParaGuardar, nuevaNota);
     setTimeout(() => cargarEstadisticasComunidad(), 400);
   }
 
-  function actualizarSeguimiento(extra: SeguimientoExtraModal) {
+  async function handleGuardarFechasHistorial(e: React.FormEvent) {
+    e.preventDefault();
     if (!user) return onRequireAuth();
+    if (!fechaInicioInput && !fechaFinInput) return;
+    if (guardandoFechas) return;
 
-    if (extra.started_at !== undefined) {
-      setFechaInicioLocal(extra.started_at || '');
+    setGuardandoFechas(true);
+    const tipo = mediaActiva.media_type || 'tv';
+    const fechaRef =
+      fechaFinInput || fechaInicioInput || new Date().toISOString().slice(0, 10);
+
+    const { data, error } = await supabase
+      .from('watch_history_dates')
+      .insert({
+        user_id: user.id,
+        tmdb_id: mediaActiva.id,
+        media_type: tipo,
+        started_date: fechaInicioInput || null,
+        finished_date: fechaFinInput || null,
+        watched_date: fechaRef,
+      })
+      .select('id, started_date, finished_date, watched_date')
+      .single();
+
+    if (!error && data) {
+      const nuevaLista = [data, ...historialFechas];
+      setHistorialFechas(nuevaLista);
+
+      const extraActualizado: SeguimientoExtraModal = {
+        started_at: fechaInicioInput || estadoActual?.started_at || null,
+        finished_at: fechaFinInput || estadoActual?.finished_at || null,
+        rewatch_count: nuevaLista.length,
+      };
+
+      setFechaInicioInput('');
+      setFechaFinInput('');
+
+      if (onUpdateSeguimiento) {
+        onUpdateSeguimiento(extraActualizado);
+      } else {
+        onUpdateEstado(
+          estadoActual?.status || 'completed',
+          estadoActual?.rating || 0,
+          estadoActual?.current_season || 1,
+          estadoActual?.current_episode || 1,
+          extraActualizado
+        );
+      }
     }
-    if (extra.finished_at !== undefined) {
-      setFechaFinLocal(extra.finished_at || '');
-    }
-    if (extra.rewatch_count !== undefined) {
-      setVecesVistaLocal(Math.max(0, extra.rewatch_count));
-    }
+
+    setGuardandoFechas(false);
+  }
+
+  async function handleBorrarFechaHistorial(idFecha: string) {
+    if (!user) return;
+    const nuevaLista = historialFechas.filter((f) => f.id !== idFecha);
+    setHistorialFechas(nuevaLista);
+
+    await supabase
+      .from('watch_history_dates')
+      .delete()
+      .eq('id', idFecha)
+      .eq('user_id', user.id);
 
     if (onUpdateSeguimiento) {
-      onUpdateSeguimiento(extra);
-      return;
+      onUpdateSeguimiento({ rewatch_count: nuevaLista.length });
     }
-    onUpdateEstado(
-      estadoActual?.status || 'completed',
-      estadoActual?.rating || 0,
-      estadoActual?.current_season || 1,
-      estadoActual?.current_episode || 1,
-      extra
-    );
   }
 
   async function compartirFicha() {
@@ -257,7 +383,7 @@ export default function SerieModal({
           url,
         });
         return;
-      } catch { }
+      } catch {}
     }
     await navigator.clipboard.writeText(url);
     setCopiadoEnlace(true);
@@ -287,8 +413,8 @@ export default function SerieModal({
     const promedio =
       notasValidas.length > 0
         ? Number(
-          (notasValidas.reduce((acc, n) => acc + n, 0) / notasValidas.length).toFixed(1)
-        )
+            (notasValidas.reduce((acc, n) => acc + n, 0) / notasValidas.length).toFixed(1)
+          )
         : 0;
 
     setVistosComunidadCount(usuariosVistos.size);
@@ -655,10 +781,11 @@ export default function SerieModal({
             <div className="min-w-0 flex-1 space-y-2 sm:space-y-2.5">
               <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase sm:px-2.5 sm:text-[11px] ${esPeli
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase sm:px-2.5 sm:text-[11px] ${
+                    esPeli
                       ? 'bg-rose-500/20 text-rose-300'
                       : 'bg-indigo-500/20 text-indigo-300'
-                    }`}
+                  }`}
                 >
                   {esPeli ? <Film className="h-2.5 w-2.5 sm:h-3 sm:w-3" /> : <Tv className="h-2.5 w-2.5 sm:h-3 sm:w-3" />}
                   {esPeli ? 'Película' : 'Serie'}
@@ -707,10 +834,11 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('watching')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'watching'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
+                    estadoActual?.status === 'watching'
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-indigo-500'
-                    }`}
+                  }`}
                 >
                   <Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Viendo
@@ -719,10 +847,11 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('completed')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'completed'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
+                    estadoActual?.status === 'completed'
                       ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-emerald-500'
-                    }`}
+                  }`}
                 >
                   <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   {esPeli ? 'Vista' : 'Terminada'}
@@ -731,10 +860,11 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('watchlist')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'watchlist'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
+                    estadoActual?.status === 'watchlist'
                       ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-amber-500'
-                    }`}
+                  }`}
                 >
                   <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Pendiente
@@ -743,10 +873,11 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('dropped')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'dropped'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
+                    estadoActual?.status === 'dropped'
                       ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-rose-500'
-                    }`}
+                  }`}
                 >
                   <PauseCircle className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Abandonada
@@ -764,10 +895,11 @@ export default function SerieModal({
                         title={notaActual === num ? 'Quitar puntuación' : `Puntuar con ${num}`}
                       >
                         <Star
-                          className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${notaActual >= num
+                          className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
+                            notaActual >= num
                               ? 'fill-amber-400 text-amber-400'
                               : ''
-                            }`}
+                          }`}
                         />
                       </button>
                     );
@@ -843,23 +975,30 @@ export default function SerieModal({
                 </div>
               )}
 
-              <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
-                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Tu seguimiento personal
-                </h3>
+              <section className="space-y-3 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    Registro de fechas vistas
+                  </h3>
+                  <span className="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-bold text-indigo-300">
+                    {historialFechas.length}{' '}
+                    {historialFechas.length === 1 ? 'vez vista' : 'veces vista'}
+                  </span>
+                </div>
 
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <form
+                  onSubmit={handleGuardarFechasHistorial}
+                  className="grid grid-cols-1 gap-2.5 sm:grid-cols-3 sm:items-end"
+                >
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold text-slate-400">
                       Fecha inicio
                     </label>
                     <input
                       type="date"
-                      value={fechaInicioLocal}
-                      onChange={(e) =>
-                        actualizarSeguimiento({ started_at: e.target.value || null })
-                      }
-                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                      value={fechaInicioInput}
+                      onChange={(e) => setFechaInicioInput(e.target.value)}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white [color-scheme:dark] focus:border-indigo-400 focus:outline-none [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-85 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                     />
                   </div>
 
@@ -869,49 +1008,60 @@ export default function SerieModal({
                     </label>
                     <input
                       type="date"
-                      value={fechaFinLocal}
-                      onChange={(e) =>
-                        actualizarSeguimiento({ finished_at: e.target.value || null })
-                      }
-                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                      value={fechaFinInput}
+                      onChange={(e) => setFechaFinInput(e.target.value)}
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white [color-scheme:dark] focus:border-indigo-400 focus:outline-none [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-85 [&::-webkit-calendar-picker-indicator]:hover:opacity-100"
                     />
                   </div>
 
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold text-slate-400">
-                      Veces vista
-                    </label>
-                    <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-2 py-1.5">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          actualizarSeguimiento({
-                            rewatch_count: Math.max(0, vecesVistaLocal - 1),
-                          })
-                        }
-                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-slate-300 transition hover:bg-slate-800 hover:text-white"
-                      >
-                        -
-                      </button>
+                  <button
+                    type="submit"
+                    disabled={guardandoFechas || (!fechaInicioInput && !fechaFinInput)}
+                    className="w-full rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {guardandoFechas ? 'Guardando...' : 'Guardar fecha'}
+                  </button>
+                </form>
 
-                      <span className="text-xs font-extrabold text-white">
-                        {vecesVistaLocal} {vecesVistaLocal === 1 ? 'vez' : 'veces'}
-                      </span>
+                {historialFechas.length > 0 && (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-[11px] font-semibold text-slate-400">
+                      Fechas registradas:
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {historialFechas.map((reg) => {
+                        const ini = formatearFechaES(reg.started_date);
+                        const fin = formatearFechaES(reg.finished_date);
+                        const unica = formatearFechaES(reg.watched_date);
+                        const etiqueta =
+                          ini && fin
+                            ? `${ini} → ${fin}`
+                            : fin
+                            ? `Vista el ${fin}`
+                            : ini
+                            ? `Inicio: ${ini}`
+                            : `Vista el ${unica}`;
 
-                      <button
-                        type="button"
-                        onClick={() =>
-                          actualizarSeguimiento({
-                            rewatch_count: vecesVistaLocal + 1,
-                          })
-                        }
-                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold text-white transition hover:bg-indigo-500"
-                      >
-                        +
-                      </button>
+                        return (
+                          <span
+                            key={reg.id}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950 px-2.5 py-1 text-[11px] text-slate-200"
+                          >
+                            <span>{etiqueta}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleBorrarFechaHistorial(reg.id)}
+                              className="text-slate-500 transition hover:text-rose-400"
+                              title="Eliminar esta fecha"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </span>
+                        );
+                      })}
                     </div>
                   </div>
-                </div>
+                )}
               </section>
 
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -976,7 +1126,9 @@ export default function SerieModal({
                   </div>
 
                   <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
-                    <p className="text-[11px] font-semibold text-slate-400">Media de la comunidad</p>
+                    <p className="text-[11px] font-semibold text-slate-400">
+                      Media de la comunidad
+                    </p>
                     <p className="mt-1 flex items-center gap-1.5 text-lg font-extrabold text-amber-300">
                       <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
                       {mediaComunidad > 0 ? `${mediaComunidad} / 5` : 'Sin notas'}
@@ -987,25 +1139,28 @@ export default function SerieModal({
                   </div>
 
                   <div className="rounded-xl border border-indigo-500/25 bg-indigo-950/20 p-3">
-                    <p className="text-[11px] font-semibold text-indigo-200">Tu nota vs comunidad</p>
+                    <p className="text-[11px] font-semibold text-indigo-200">
+                      Tu nota vs comunidad
+                    </p>
                     {hayComparativa ? (
                       <div className="mt-1">
                         <p className="text-sm font-extrabold text-white">
                           Tú: ★ {miNota} · Media: ★ {mediaComunidad}
                         </p>
                         <p
-                          className={`text-[11px] font-bold ${diff > 0
+                          className={`text-[11px] font-bold ${
+                            diff > 0
                               ? 'text-emerald-400'
                               : diff < 0
-                                ? 'text-rose-400'
-                                : 'text-slate-300'
-                            }`}
+                              ? 'text-rose-400'
+                              : 'text-slate-300'
+                          }`}
                         >
                           {diff > 0
                             ? `+${diff} ★ por encima de la media`
                             : diff < 0
-                              ? `${diff} ★ por debajo de la media`
-                              : 'Igual que la media de la comunidad'}
+                            ? `${diff} ★ por debajo de la media`
+                            : 'Igual que la media de la comunidad'}
                         </p>
                       </div>
                     ) : (
@@ -1050,7 +1205,9 @@ export default function SerieModal({
                           >
                             <div className="flex items-center justify-between gap-2 text-[11px]">
                               <div className="flex items-center gap-2">
-                                <span className="font-bold text-indigo-400">@{com.username}</span>
+                                <span className="font-bold text-indigo-400">
+                                  @{com.username}
+                                </span>
                                 {notaCom > 0 && (
                                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
                                     <Star className="h-2.5 w-2.5 fill-amber-400 text-amber-400" />
@@ -1111,10 +1268,11 @@ export default function SerieModal({
                           key={temp.season_number}
                           type="button"
                           onClick={() => setTemporadaSeleccionada(temp.season_number)}
-                          className={`rounded-xl px-3 py-1 text-xs font-bold transition ${temporadaSeleccionada === temp.season_number
+                          className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
+                            temporadaSeleccionada === temp.season_number
                               ? 'bg-indigo-600 text-white'
                               : 'bg-slate-950 text-slate-400 hover:text-white'
-                            }`}
+                          }`}
                         >
                           Temp {temp.season_number}
                         </button>
@@ -1131,10 +1289,11 @@ export default function SerieModal({
                       return (
                         <div
                           key={ep.id}
-                          className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition ${visto
+                          className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition ${
+                            visto
                               ? 'border-emerald-500/30 bg-emerald-500/5'
                               : 'border-slate-800 bg-slate-950/80'
-                            }`}
+                          }`}
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <button
@@ -1142,10 +1301,11 @@ export default function SerieModal({
                               onClick={() =>
                                 toggleEpisodioVisto(temporadaSeleccionada, ep.episode_number)
                               }
-                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${visto
+                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${
+                                visto
                                   ? 'border-emerald-500 bg-emerald-600 text-white'
                                   : 'border-slate-700 bg-slate-900 text-transparent hover:border-indigo-500'
-                                }`}
+                              }`}
                             >
                               <Check className="h-4 w-4" />
                             </button>
@@ -1176,13 +1336,18 @@ export default function SerieModal({
                                     )
                                   }
                                   className="p-0.5 text-slate-700 hover:text-amber-400"
-                                  title={nuevaNotaEp === 0 ? 'Quitar puntuación' : `Puntuar con ${estrella}`}
+                                  title={
+                                    nuevaNotaEp === 0
+                                      ? 'Quitar puntuación'
+                                      : `Puntuar con ${estrella}`
+                                  }
                                 >
                                   <Star
-                                    className={`h-3 w-3 ${notaEpActual >= estrella
+                                    className={`h-3 w-3 ${
+                                      notaEpActual >= estrella
                                         ? 'fill-amber-400 text-amber-400'
                                         : ''
-                                      }`}
+                                    }`}
                                   />
                                 </button>
                               );
@@ -1267,7 +1432,7 @@ export default function SerieModal({
           media={mediaParaChat}
           user={user}
           estadoUsuario={estadoActual}
-          onMarcarViendo={(item) => handleToggleEstado('watching')}
+          onMarcarViendo={() => handleToggleEstado('watching')}
           onClose={() => setMostrarChatSala(false)}
           onRequireAuth={onRequireAuth}
         />

@@ -223,6 +223,7 @@ export default function Home() {
       await cargarDatosUsuario(session.user.id);
     } else {
       setUser(null);
+      setPerfilActivoId(null);
       setCargandoUsuario(false);
     }
   }, [cargarDatosUsuario]);
@@ -261,6 +262,7 @@ export default function Home() {
         cargarDatosUsuario(nextUser.id);
       } else {
         setUsername('');
+        setPerfilActivoId(null);
         setMiLista({});
         setColecciones([]);
         setVista((prev) => (prev === 'biblioteca' || prev === 'perfil' ? 'explorar' : prev));
@@ -308,7 +310,7 @@ export default function Home() {
 
   const cargarNotificacionesSociales = useCallback(async () => {
     if (!user) return;
-    const [{ count: solCount }, { count: msgCount }] = await Promise.all([
+    const [{ count: solCount }, { count: msgCount }, { count: grpInvCount }] = await Promise.all([
       supabase
         .from('friendships')
         .select('*', { count: 'exact', head: true })
@@ -319,8 +321,13 @@ export default function Home() {
         .select('*', { count: 'exact', head: true })
         .eq('receiver_id', user.id)
         .eq('read', false),
+      supabase
+        .from('friend_group_invitations')
+        .select('*', { count: 'exact', head: true })
+        .eq('invitee_id', user.id)
+        .eq('status', 'pending'),
     ]);
-    setNotificacionesCount((solCount || 0) + (msgCount || 0));
+    setNotificacionesCount((solCount || 0) + (msgCount || 0) + (grpInvCount || 0));
   }, [user]);
 
   useEffect(() => {
@@ -1388,6 +1395,7 @@ export default function Home() {
             onSelectMedia={(media) => setItemActivo(media)}
             onRequireAuth={() => setShowAuth(true)}
             onNotify={mostrarToast}
+            onGoToComunidad={() => setVista('comunidad')}
           />
         ) : vista === 'comunidad' ? (
           <ComunidadFeed
@@ -1400,7 +1408,6 @@ export default function Home() {
           />
         ) : (
           <>
-            {/* Portada adaptable: Visitante sin sesión vs Usuario con sesión */}
             {vista === 'explorar' && !query.trim() && (
               <section className="mb-6 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950/35 p-4 shadow-xl sm:p-6">
                 {!user ? (

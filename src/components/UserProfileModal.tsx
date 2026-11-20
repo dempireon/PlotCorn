@@ -3,10 +3,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
+import EditarPerfilModal from '@/components/EditarPerfilModal';
 import {
   UserPlus, UserCheck, MessageSquare, Send,
   Eye, Check, Clock, Star, Folder, Copy, Edit3, Save, Share2,
-  Users, BarChart3, ArrowLeft, PauseCircle, Film, Tv, Sparkles, Clapperboard
+  Users, BarChart3, ArrowLeft, PauseCircle, Film, Tv, Sparkles, Clapperboard,
+  Camera, Wifi
 } from 'lucide-react';
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
@@ -18,6 +20,7 @@ interface UserProfileModalProps {
   onSelectMedia: (media: MediaTMDB) => void;
   onRequireAuth: () => void;
   onNotify?: (msg: string) => void;
+  onGoToComunidad?: () => void;
 }
 
 type FormatoDetallado = 'tv' | 'movie' | 'reality' | 'documentary';
@@ -167,12 +170,14 @@ export default function UserProfileModal({
   onSelectMedia,
   onRequireAuth,
   onNotify,
+  onGoToComunidad,
 }: UserProfileModalProps) {
   const [usuarioActivoId, setUsuarioActivoId] = useState<string>(targetUserId);
 
   const [perfil, setPerfil] = useState<any>(null);
   const [bioEdit, setBioEdit] = useState('');
   const [editandoBio, setEditandoBio] = useState(false);
+  const [mostrarEditarPerfil, setMostrarEditarPerfil] = useState(false);
 
   const [seriesUsuario, setSeriesUsuario] = useState<any[]>([]);
   const [episodiosUsuario, setEpisodiosUsuario] = useState<any[]>([]);
@@ -187,6 +192,8 @@ export default function UserProfileModal({
 
   const [misSolicitudes, setMisSolicitudes] = useState<any[]>([]);
   const [misAmigos, setMisAmigos] = useState<any[]>([]);
+  const [soloConectados, setSoloConectados] = useState(false);
+  const [usuariosConectadosIds, setUsuariosConectadosIds] = useState<Set<string>>(new Set());
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState<Record<string, number>>({});
 
   const [tabPerfil, setTabPerfil] = useState<'estadisticas' | 'colecciones' | 'amigos' | 'chat'>('estadisticas');
@@ -210,6 +217,50 @@ export default function UserProfileModal({
     setTabPerfil('estadisticas');
     cargarTodoPerfil(usuarioActivoId);
   }, [usuarioActivoId, currentUser?.id]);
+
+  // Presencia global en vivo para saber quién está conectado en amigos
+  useEffect(() => {
+    let activo = true;
+    const presenceKey = currentUser?.id
+      ? `${currentUser.id}-${Math.random().toString(36).slice(2, 7)}`
+      : `anon-${Math.random().toString(36).slice(2, 8)}`;
+
+    const canalPresencia = supabase.channel('plotverse-presencia-global', {
+      config: { presence: { key: presenceKey } },
+    });
+
+    const actualizarConectados = () => {
+      if (!activo) return;
+      const state = canalPresencia.presenceState();
+      const idsOnline = new Set<string>();
+      Object.values(state).forEach((presencias: any) => {
+        (presencias || []).forEach((p: any) => {
+          if (p?.user_id) idsOnline.add(String(p.user_id));
+        });
+      });
+      setUsuariosConectadosIds(idsOnline);
+    };
+
+    canalPresencia
+      .on('presence', { event: 'sync' }, actualizarConectados)
+      .on('presence', { event: 'join' }, actualizarConectados)
+      .on('presence', { event: 'leave' }, actualizarConectados)
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED' && activo && currentUser?.id) {
+          await canalPresencia.track({
+            user_id: currentUser.id,
+            username: perfil?.username || currentUser.email?.split('@')[0] || 'usuario',
+            online_at: new Date().toISOString(),
+          });
+          actualizarConectados();
+        }
+      });
+
+    return () => {
+      activo = false;
+      supabase.removeChannel(canalPresencia);
+    };
+  }, [currentUser?.id, perfil?.username]);
 
   useEffect(() => {
     if (tabPerfil === 'chat' && currentUser && !esMiPerfil) {
@@ -248,7 +299,7 @@ export default function UserProfileModal({
       .eq('id', uid)
       .single();
 
-    setPerfil(profData || { id: uid, username: 'usuario', bio: '' });
+    setPerfil(profData || { id: uid, username: 'usuario', bio: '', avatar_url: null });
     setBioEdit(profData?.bio || '');
 
     const [{ data: uSeries }, { data: epRows }, { data: cRows }] = await Promise.all([
@@ -431,7 +482,7 @@ export default function UserProfileModal({
       if (todosIds.length > 0) {
         const { data: profs } = await supabase
           .from('profiles')
-          .select('id, username, bio')
+          .select('id, username, bio, avatar_url')
           .in('id', todosIds);
         (profs || []).forEach((p: any) => {
           perfilesSociales[p.id] = p;
@@ -656,6 +707,15 @@ export default function UserProfileModal({
     onNotify?.(`Colección "${col.name}" guardada en tu biblioteca`);
   }
 
+  const amigosConectadosCount = useMemo(() => {
+    return misAmigos.filter((am) => usuariosConectadosIds.has(String(am.id))).length;
+  }, [misAmigos, usuariosConectadosIds]);
+
+  const amigosVisibles = useMemo(() => {
+    if (!soloConectados) return misAmigos;
+    return misAmigos.filter((am) => usuariosConectadosIds.has(String(am.id)));
+  }, [misAmigos, soloConectados, usuariosConectadosIds]);
+
   const formatosConteo = useMemo(() => {
     let series = 0;
     let pelis = 0;
@@ -788,6 +848,7 @@ export default function UserProfileModal({
 
   const totalNoLeidos = Object.values(mensajesNoLeidos).reduce((a, b) => a + b, 0);
   const badgeAmigos = misSolicitudes.length + totalNoLeidos;
+  const perfilEstaConectado = usuariosConectadosIds.has(String(usuarioActivoId));
 
   return (
     <div className="overflow-hidden rounded-3xl border border-slate-800/90 bg-slate-950 shadow-2xl">
@@ -809,13 +870,35 @@ export default function UserProfileModal({
               <ArrowLeft className="h-4 w-4" />
             </button>
 
-            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-indigo-400/40 bg-gradient-to-br from-indigo-500 to-violet-600 text-2xl font-bold uppercase text-white shadow-lg shadow-indigo-600/30">
-              {(perfil?.username || 'U')[0]}
+            <div className="relative shrink-0">
+              {perfil?.avatar_url ? (
+                <img
+                  src={perfil.avatar_url}
+                  alt={perfil?.username || 'Avatar'}
+                  className="h-16 w-16 rounded-2xl border border-indigo-400/40 object-cover shadow-lg shadow-indigo-600/30"
+                />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-indigo-400/40 bg-gradient-to-br from-indigo-500 to-violet-600 text-2xl font-bold uppercase text-white shadow-lg shadow-indigo-600/30">
+                  {(perfil?.username || 'U')[0]}
+                </div>
+              )}
+              {perfilEstaConectado && (
+                <span
+                  title="Conectado ahora"
+                  className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full border-2 border-slate-950 bg-emerald-400"
+                />
+              )}
             </div>
 
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-xl font-bold text-white">@{perfil?.username || 'usuario'}</h2>
+                {perfilEstaConectado && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    En línea
+                  </span>
+                )}
                 {esMiPerfil && (
                   <span className="rounded-full border border-indigo-400/30 bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-bold text-indigo-300">
                     Mi perfil
@@ -895,6 +978,30 @@ export default function UserProfileModal({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {esMiPerfil && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMostrarEditarPerfil(true)}
+                  className="flex items-center gap-1.5 rounded-xl border border-indigo-400/50 bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500 active:scale-[0.98]"
+                >
+                  <Camera className="h-3.5 w-3.5" />
+                  Cambiar foto y nick
+                </button>
+
+                {onGoToComunidad && (
+                  <button
+                    type="button"
+                    onClick={onGoToComunidad}
+                    className="flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-400 hover:bg-slate-800 hover:text-white active:scale-[0.98]"
+                  >
+                    <Users className="h-3.5 w-3.5 text-indigo-400" />
+                    Grupos de amigos
+                  </button>
+                )}
+              </>
+            )}
+
             {!esMiPerfil && (
               <>
                 <button
@@ -1012,7 +1119,7 @@ export default function UserProfileModal({
                 }`}
             >
               <Users className="h-3.5 w-3.5" />
-              Amigos ({misAmigos.length})
+              Amigos ({amigosConectadosCount}/{misAmigos.length} en línea)
               {badgeAmigos > 0 && (
                 <span className="rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
                   {badgeAmigos}
@@ -1043,6 +1150,24 @@ export default function UserProfileModal({
           <div className="py-12 text-center text-sm text-slate-400">Cargando perfil...</div>
         ) : tabPerfil === 'amigos' && esMiPerfil ? (
           <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-slate-800 bg-slate-900/50 px-4 py-2.5">
+              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-300">
+                <Wifi className="h-3.5 w-3.5" />
+                {amigosConectadosCount} {amigosConectadosCount === 1 ? 'amigo conectado' : 'amigos conectados'} ahora
+              </span>
+              <button
+                type="button"
+                onClick={() => setSoloConectados(!soloConectados)}
+                className={`rounded-xl border px-3 py-1 text-[11px] font-bold transition ${
+                  soloConectados
+                    ? 'border-emerald-400/50 bg-emerald-600/20 text-emerald-200'
+                    : 'border-slate-700 bg-slate-950 text-slate-300 hover:text-white'
+                }`}
+              >
+                {soloConectados ? 'Ver todos los amigos' : 'Solo conectados'}
+              </button>
+            </div>
+
             {misSolicitudes.length > 0 && (
               <div className="space-y-2.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4">
                 <h4 className="flex items-center gap-1.5 text-xs font-bold text-amber-300">
@@ -1084,16 +1209,19 @@ export default function UserProfileModal({
               </div>
             )}
 
-            {misAmigos.length === 0 ? (
+            {amigosVisibles.length === 0 ? (
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8 text-center">
                 <p className="text-xs text-slate-400">
-                  Aún no tienes amigos agregados. Explora la pestaña <strong className="text-indigo-300">Comunidad</strong> para buscar usuarios y enviarles solicitud.
+                  {soloConectados
+                    ? 'No hay amigos conectados en este momento.'
+                    : 'Aún no tienes amigos agregados. Explora la pestaña Comunidad para buscar usuarios y enviarles solicitud.'}
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {misAmigos.map((am) => {
+                {amigosVisibles.map((am) => {
                   const sinLeer = mensajesNoLeidos[am.id] || 0;
+                  const estaOnline = usuariosConectadosIds.has(String(am.id));
                   return (
                     <button
                       key={am.id}
@@ -1102,13 +1230,28 @@ export default function UserProfileModal({
                       className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/70 p-3.5 text-left transition hover:border-indigo-500/50"
                     >
                       <div className="flex items-center gap-3 truncate">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600/25 text-xs font-bold uppercase text-indigo-200">
-                          {(am.username || 'A')[0]}
+                        <div className="relative shrink-0">
+                          {am.avatar_url ? (
+                            <img
+                              src={am.avatar_url}
+                              alt={am.username || 'Amigo'}
+                              className="h-9 w-9 rounded-xl object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-600/25 text-xs font-bold uppercase text-indigo-200">
+                              {(am.username || 'A')[0]}
+                            </div>
+                          )}
+                          <span
+                            className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-slate-900 ${
+                              estaOnline ? 'bg-emerald-400' : 'bg-slate-600'
+                            }`}
+                          />
                         </div>
                         <div className="truncate">
                           <p className="truncate text-xs font-bold text-white">@{am.username}</p>
                           <p className="truncate text-[11px] text-slate-400">
-                            {am.bio || 'Amigo en PlotVerse'}
+                            {estaOnline ? 'Conectado ahora' : am.bio || 'Amigo en PlotVerse'}
                           </p>
                         </div>
                       </div>
@@ -1546,6 +1689,23 @@ export default function UserProfileModal({
           </div>
         )}
       </div>
+
+      {mostrarEditarPerfil && currentUser && (
+        <EditarPerfilModal
+          userId={currentUser.id}
+          currentUsername={perfil?.username || ''}
+          currentAvatarUrl={perfil?.avatar_url || null}
+          onClose={() => setMostrarEditarPerfil(false)}
+          onSaved={(nuevoNick, nuevaFoto) => {
+            setPerfil((prev: any) => ({
+              ...prev,
+              username: nuevoNick,
+              avatar_url: nuevaFoto,
+            }));
+            onNotify?.('Perfil actualizado');
+          }}
+        />
+      )}
     </div>
   );
 }
