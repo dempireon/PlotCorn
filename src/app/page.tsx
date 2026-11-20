@@ -1142,7 +1142,7 @@ export default function Home() {
               className="flex cursor-pointer items-center gap-3"
             >
               <img
-                src="/logoPlotVerse.jpeg"
+                src="/logoplotverse.jpeg"
                 alt="Logo"
                 className="h-10 w-10 rounded-xl border border-indigo-500/40 object-cover shadow-lg shadow-indigo-950/40"
               />
