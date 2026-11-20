@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   discoverMediaAvanzado,
   searchMedia,
@@ -14,7 +14,7 @@ import {
 } from '@/lib/tmdb';
 import { supabase } from '@/lib/supabase';
 import AuthModal from '@/components/AuthModal';
-import SerieModal from '@/components/SerieModal';
+import SerieModal, { SeguimientoExtraModal } from '@/components/SerieModal';
 import ComunidadFeed from '@/components/ComunidadFeed';
 import UserProfileModal from '@/components/UserProfileModal';
 import { Coleccion } from '@/components/ColeccionesBar';
@@ -22,16 +22,17 @@ import ProximosEstrenosBar from '@/components/ProximosEstrenosBar';
 import RecomendacionesParaTi from '@/components/RecomendacionesParaTi';
 import RuletaDecisionModal from '@/components/RuletaDecisionModal';
 import {
-  Search, Star, Tv, Film, Check, Clock, Eye, Sparkles,
+  Search, Star, Tv, Film, Check, Clock, Eye, PauseCircle, Sparkles,
   User, LogOut, Bookmark, Users, Plus, Trash2, ChevronDown,
   Clapperboard, Flame, SlidersHorizontal, RotateCcw, FolderPlus,
   Calendar, Folder, Library, Globe, Lock, Compass, ArrowUpDown,
   Bell, Dices
 } from 'lucide-react';
 
-type EstadoMedia = 'watching' | 'completed' | 'watchlist';
+type EstadoMedia = 'watching' | 'completed' | 'watchlist' | 'dropped';
 type TabBiblioteca = 'catalogo' | 'colecciones' | 'estrenos';
 type OrdenBiblioteca = 'recientes' | 'nota' | 'alfabetico';
+type VistaPrincipal = 'explorar' | 'biblioteca' | 'comunidad' | 'perfil';
 
 interface ItemGuardado {
   tmdb_id: number;
@@ -40,6 +41,9 @@ interface ItemGuardado {
   rating: number;
   current_season: number;
   current_episode: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+  rewatch_count?: number;
   title?: string;
   poster_path?: string | null;
 }
@@ -53,19 +57,16 @@ export default function Home() {
   const [tabBiblioteca, setTabBiblioteca] = useState<TabBiblioteca>('catalogo');
   const [loading, setLoading] = useState(true);
   const [cargandoUsuario, setCargandoUsuario] = useState(true);
-  const [vista, setVista] = useState<'explorar' | 'biblioteca' | 'comunidad'>('explorar');
+  const [vista, setVista] = useState<VistaPrincipal>('explorar');
   const peticionEpRef = useRef<Record<string, number>>({});
 
-  // Filtros internos dentro de Mi Biblioteca
   const [busquedaBiblio, setBusquedaBiblio] = useState('');
   const [ordenBiblio, setOrdenBiblio] = useState<OrdenBiblioteca>('recientes');
 
-  // Notificación visual flotante (Toast), Ruleta y Campana social
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [mostrarRuleta, setMostrarRuleta] = useState(false);
   const [notificacionesCount, setNotificacionesCount] = useState(0);
 
-  // Estados para crear nueva colección directamente en su bloque
   const [nuevaColNombre, setNuevaColNombre] = useState('');
   const [nuevaColDesc, setNuevaColDesc] = useState('');
   const [nuevaColPublica, setNuevaColPublica] = useState(true);
@@ -83,116 +84,46 @@ export default function Home() {
   const [colecciones, setColecciones] = useState<Coleccion[]>([]);
   const [cacheTitulos, setCacheTitulos] = useState<Record<string, { title: string; poster_path: string | null }>>({});
 
-  function mostrarToast(texto: string) {
+  const mostrarToast = useCallback((texto: string) => {
     setToastMsg(texto);
     setTimeout(() => {
       setToastMsg((prev) => (prev === texto ? null : prev));
     }, 2800);
-  }
-
-  useEffect(() => {
-    cargarCatalogo('all', '', '');
-    comprobarSesion();
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        cargarDatosUsuario(session.user.id);
-      } else {
-        setUsername('');
-        setMiLista({});
-        setColecciones([]);
-        setCargandoUsuario(false);
-      }
-    });
-
-    return () => listener.subscription.unsubscribe();
   }, []);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const mediaParam = params.get('media');
-    const userParam = params.get('user');
-
-    if (userParam) {
-      setPerfilActivoId(userParam);
-    } else if (mediaParam) {
-      const [tipoRaw, idRaw] = mediaParam.split('-');
-      const idNum = Number(idRaw);
-      if (idNum) {
-        const tipo = tipoRaw === 'movie' ? 'movie' : 'tv';
-        fetch(
-          `https://api.themoviedb.org/3/${tipo}/${idNum}?api_key=${process.env.NEXT_PUBLIC_TMDB_API_KEY}&language=es-ES`
-        )
-          .then((r) => r.json())
-          .then((d) => {
-            if (d?.id) {
-              setItemActivo({
-                id: d.id,
-                media_type: tipo,
-                name: d.title || d.name,
-                overview: d.overview || '',
-                poster_path: d.poster_path,
-                backdrop_path: d.backdrop_path,
-                first_air_date: d.release_date || d.first_air_date || '',
-                vote_average: d.vote_average || 0,
-              });
-            }
-          });
-      }
-    }
+  const abrirPerfil = useCallback((uid: string) => {
+    if (!uid) return;
+    setPerfilActivoId(uid);
+    setVista('perfil');
   }, []);
 
-  useEffect(() => {
-    if (!user) {
-      setNotificacionesCount(0);
-      return;
-    }
-    cargarNotificacionesSociales();
-    const timer = setInterval(cargarNotificacionesSociales, 15000);
-    return () => clearInterval(timer);
-  }, [user?.id, vista]);
+  const cargarDatosUsuario = useCallback(async (userId: string) => {
+    setCargandoUsuario(true);
 
-  async function cargarNotificacionesSociales() {
-    if (!user) return;
-    const [{ count: solCount }, { count: msgCount }] = await Promise.all([
+    const [
+      { data: profile },
+      { data: episodiosData },
+      { data: userSeries, error: errorSeries },
+      { data: colsData },
+    ] = await Promise.all([
+      supabase.from('profiles').select('username').eq('id', userId).single(),
       supabase
-        .from('friendships')
-        .select('*', { count: 'exact', head: true })
-        .eq('addressee_id', user.id)
-        .eq('status', 'pending'),
+        .from('watched_episodes')
+        .select('tmdb_id, season_number, episode_number, rating')
+        .eq('user_id', userId),
       supabase
-        .from('direct_messages')
-        .select('*', { count: 'exact', head: true })
-        .eq('receiver_id', user.id)
-        .eq('read', false),
+        .from('user_series')
+        .select('*')
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('user_collections')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: true }),
     ]);
-    setNotificacionesCount((solCount || 0) + (msgCount || 0));
-  }
 
-  async function comprobarSesion() {
-    setCargandoUsuario(true);
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      setUser(session.user);
-      await cargarDatosUsuario(session.user.id);
-    }
-    setCargandoUsuario(false);
-  }
-
-  async function cargarDatosUsuario(userId: string) {
-    setCargandoUsuario(true);
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('username')
-      .eq('id', userId)
-      .single();
-    if (profile) setUsername(profile.username);
-
-    const { data: episodiosData } = await supabase
-      .from('watched_episodes')
-      .select('tmdb_id, season_number, episode_number, rating')
-      .eq('user_id', userId);
+    if (profile?.username) setUsername(profile.username);
 
     const notasMap: Record<string, number> = {};
     (episodiosData || []).forEach((ep: any) => {
@@ -201,18 +132,6 @@ export default function Home() {
       }
     });
     setNotasEpisodiosMap(notasMap);
-
-    const { data: userSeries, error } = await supabase
-      .from('user_series')
-      .select('*')
-      .eq('user_id', userId)
-      .order('updated_at', { ascending: false });
-
-    const { data: colsData } = await supabase
-      .from('user_collections')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: true });
 
     let colItemsData: any[] = [];
     if (colsData && colsData.length > 0) {
@@ -236,8 +155,8 @@ export default function Home() {
     }));
     setColecciones(colsFormateadas);
 
-    if (error) {
-      console.error('Error cargando biblioteca:', error.message);
+    if (errorSeries) {
+      console.error('Error cargando biblioteca:', errorSeries.message);
       setCargandoUsuario(false);
       return;
     }
@@ -278,6 +197,9 @@ export default function Home() {
           rating: item.rating || 0,
           current_season: item.current_season || 1,
           current_episode: item.current_episode || 1,
+          started_at: item.started_at ?? null,
+          finished_at: item.finished_at ?? null,
+          rewatch_count: Number(item.rewatch_count ?? 0),
           title: infoCache?.title || 'Título guardado',
           poster_path: infoCache?.poster_path || null,
         };
@@ -286,8 +208,130 @@ export default function Home() {
     } else {
       setMiLista({});
     }
+
     setCargandoUsuario(false);
-  }
+  }, []);
+
+  const comprobarSesion = useCallback(async () => {
+    setCargandoUsuario(true);
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (session?.user) {
+      setUser(session.user);
+      setPerfilActivoId((prev) => prev || session.user.id);
+      await cargarDatosUsuario(session.user.id);
+    } else {
+      setUser(null);
+      setCargandoUsuario(false);
+    }
+  }, [cargarDatosUsuario]);
+
+  const cargarCatalogo = useCallback(
+    async (
+      cat: CategoriaFiltro = filtroTipo,
+      plat: string = plataformaId,
+      gen: string = generoId
+    ) => {
+      setLoading(true);
+      try {
+        const data = await discoverMediaAvanzado({
+          categoria: cat,
+          plataformaId: plat,
+          generoId: gen,
+        });
+        setItems(data);
+      } catch (error) {
+        console.error(error);
+      }
+      setLoading(false);
+    },
+    [filtroTipo, plataformaId, generoId]
+  );
+
+  useEffect(() => {
+    cargarCatalogo('all', '', '');
+    comprobarSesion();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      if (nextUser) {
+        setPerfilActivoId((prev) => prev || nextUser.id);
+        cargarDatosUsuario(nextUser.id);
+      } else {
+        setUsername('');
+        setMiLista({});
+        setColecciones([]);
+        setVista((prev) => (prev === 'biblioteca' || prev === 'perfil' ? 'explorar' : prev));
+        setCargandoUsuario(false);
+      }
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, [cargarCatalogo, comprobarSesion, cargarDatosUsuario]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mediaParam = params.get('media');
+    const userParam = params.get('user');
+
+    if (userParam) {
+      setPerfilActivoId(userParam);
+      setVista('perfil');
+    } else if (mediaParam) {
+      const [tipoRaw, idRaw] = mediaParam.split('-');
+      const idNum = Number(idRaw);
+      if (idNum) {
+        const tipo = tipoRaw === 'movie' ? 'movie' : 'tv';
+        fetch(
+          `https://api.themoviedb.org/3/${tipo}/${idNum}?api_key=${process.env.NEXT_PUBLIC_TMDB_API_KEY}&language=es-ES`
+        )
+          .then((r) => r.json())
+          .then((d) => {
+            if (d?.id) {
+              setItemActivo({
+                id: d.id,
+                media_type: tipo,
+                name: d.title || d.name,
+                overview: d.overview || '',
+                poster_path: d.poster_path,
+                backdrop_path: d.backdrop_path,
+                first_air_date: d.release_date || d.first_air_date || '',
+                vote_average: d.vote_average || 0,
+              });
+            }
+          });
+      }
+    }
+  }, []);
+
+  const cargarNotificacionesSociales = useCallback(async () => {
+    if (!user) return;
+    const [{ count: solCount }, { count: msgCount }] = await Promise.all([
+      supabase
+        .from('friendships')
+        .select('*', { count: 'exact', head: true })
+        .eq('addressee_id', user.id)
+        .eq('status', 'pending'),
+      supabase
+        .from('direct_messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('receiver_id', user.id)
+        .eq('read', false),
+    ]);
+    setNotificacionesCount((solCount || 0) + (msgCount || 0));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      setNotificacionesCount(0);
+      return;
+    }
+    cargarNotificacionesSociales();
+    const timer = setInterval(cargarNotificacionesSociales, 15000);
+    return () => clearInterval(timer);
+  }, [user?.id, vista, cargarNotificacionesSociales, user]);
 
   async function cargarNotasSerie(tmdbId: number) {
     if (!user) return;
@@ -323,7 +367,7 @@ export default function Home() {
       .single();
 
     if (error) {
-      alert('Error creando colección: ' + error.message);
+      mostrarToast('No se pudo crear la colección');
       setCreandoCol(false);
       return;
     }
@@ -427,25 +471,6 @@ export default function Home() {
     setTemporadasCache((prev) => ({ ...prev, [tmdbId]: mapa }));
   }
 
-  async function cargarCatalogo(
-    cat: CategoriaFiltro = filtroTipo,
-    plat: string = plataformaId,
-    gen: string = generoId
-  ) {
-    setLoading(true);
-    try {
-      const data = await discoverMediaAvanzado({
-        categoria: cat,
-        plataformaId: plat,
-        generoId: gen,
-      });
-      setItems(data);
-    } catch (error) {
-      console.error(error);
-    }
-    setLoading(false);
-  }
-
   async function cambiarFiltroTipo(nuevoTipo: CategoriaFiltro) {
     setFiltroTipo(nuevoTipo);
     if (vista === 'explorar') {
@@ -546,7 +571,8 @@ export default function Home() {
     status: EstadoMedia,
     rating: number,
     season?: number,
-    episode?: number
+    episode?: number,
+    extra?: SeguimientoExtraModal
   ) {
     if (!user) {
       setShowAuth(true);
@@ -561,6 +587,25 @@ export default function Home() {
     const previo = miLista[clave];
     const nuevaTemporada = season ?? previo?.current_season ?? 1;
     const nuevoEpisodio = episode ?? previo?.current_episode ?? 1;
+    const hoyISO = new Date().toISOString().slice(0, 10);
+
+    const startedAtFinal =
+      extra?.started_at !== undefined
+        ? extra.started_at
+        : previo?.started_at ??
+          (status === 'watching' || status === 'completed' ? hoyISO : null);
+
+    const finishedAtFinal =
+      extra?.finished_at !== undefined
+        ? extra.finished_at
+        : previo?.finished_at ?? (status === 'completed' ? hoyISO : null);
+
+    const rewatchFinal =
+      extra?.rewatch_count !== undefined
+        ? Math.max(0, extra.rewatch_count)
+        : status === 'completed'
+        ? Math.max(1, Number(previo?.rewatch_count || 0))
+        : Number(previo?.rewatch_count || 0);
 
     setMiLista((prev) => ({
       ...prev,
@@ -571,6 +616,9 @@ export default function Home() {
         rating,
         current_season: nuevaTemporada,
         current_episode: nuevoEpisodio,
+        started_at: startedAtFinal,
+        finished_at: finishedAtFinal,
+        rewatch_count: rewatchFinal,
         title: item.name,
         poster_path: item.poster_path,
       },
@@ -583,6 +631,8 @@ export default function Home() {
           : 'Viendo'
         : status === 'completed'
         ? 'Completado'
+        : status === 'dropped'
+        ? 'Abandonada'
         : 'Pendiente';
     mostrarToast(`${item.name} · ${etiquetaEstado}${rating > 0 ? ` · ★${rating}` : ''}`);
 
@@ -605,7 +655,7 @@ export default function Home() {
     );
 
     if (errorCache) {
-      alert('Error guardando caché: ' + errorCache.message);
+      mostrarToast('No se pudo actualizar la caché del título');
       return;
     }
 
@@ -618,13 +668,16 @@ export default function Home() {
         rating,
         current_season: nuevaTemporada,
         current_episode: nuevoEpisodio,
+        started_at: startedAtFinal,
+        finished_at: finishedAtFinal,
+        rewatch_count: rewatchFinal,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id,tmdb_id,media_type' }
     );
 
     if (errorLista) {
-      alert('Error guardando en biblioteca: ' + errorLista.message);
+      mostrarToast('No se pudo guardar en tu biblioteca');
     }
   }
 
@@ -721,9 +774,19 @@ export default function Home() {
       acentoBadge: 'bg-emerald-500/20 text-emerald-300',
       items: filtrarYOrdenarBiblio(todosGuardados.filter((i) => i.status === 'completed')),
     },
+    {
+      key: 'dropped',
+      titulo: 'Abandonadas / En pausa',
+      subtitulo: 'Dejadas a medias por ahora',
+      icono: <PauseCircle className="h-4 w-4 text-rose-400" />,
+      acentoBorder: 'border-rose-500/30',
+      acentoBadge: 'bg-rose-500/20 text-rose-300',
+      items: filtrarYOrdenarBiblio(todosGuardados.filter((i) => i.status === 'dropped')),
+    },
   ];
 
   const tituloSeccion = () => {
+    if (vista === 'perfil') return 'Perfil';
     if (vista === 'biblioteca') {
       if (tabBiblioteca === 'estrenos') return 'Próximos Estrenos';
       if (tabBiblioteca === 'colecciones') return 'Mis Colecciones';
@@ -824,12 +887,9 @@ export default function Home() {
                 </p>
               </div>
 
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="relative mt-2"
-              >
+              <div onClick={(e) => e.stopPropagation()} className="relative mt-2">
                 <button
-                 onClick={() => {
+                  onClick={() => {
                     if (!user) return setShowAuth(true);
                     if (!abierto && !esPeli) {
                       asegurarTemporadas(item.id);
@@ -844,6 +904,8 @@ export default function Home() {
                       ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/25 hover:bg-indigo-500'
                       : infoUsuario.status === 'completed'
                       ? 'border-emerald-400/60 bg-emerald-600 text-white shadow-md shadow-emerald-600/25 hover:bg-emerald-500'
+                      : infoUsuario.status === 'dropped'
+                      ? 'border-rose-400/60 bg-rose-600 text-white shadow-md shadow-rose-600/25 hover:bg-rose-500'
                       : 'border-amber-400/60 bg-amber-600 text-white shadow-md shadow-amber-600/25 hover:bg-amber-500'
                   }`}
                 >
@@ -874,6 +936,12 @@ export default function Home() {
                       <>
                         <Clock className="h-3.5 w-3.5 shrink-0" />
                         Pendiente
+                      </>
+                    )}
+                    {infoUsuario?.status === 'dropped' && (
+                      <>
+                        <PauseCircle className="h-3.5 w-3.5 shrink-0" />
+                        Abandonada
                       </>
                     )}
                   </span>
@@ -929,6 +997,21 @@ export default function Home() {
                     >
                       <Clock className="h-3.5 w-3.5" />
                       Pendiente
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        guardarEnNube(item, 'dropped', infoUsuario?.rating || 0);
+                        setMenuAbierto(null);
+                      }}
+                      className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-medium transition ${
+                        infoUsuario?.status === 'dropped'
+                          ? 'bg-rose-600 text-white'
+                          : 'text-slate-200 hover:bg-slate-800'
+                      }`}
+                    >
+                      <PauseCircle className="h-3.5 w-3.5" />
+                      Abandonada
                     </button>
 
                     {!esPeli && infoUsuario?.status === 'watching' && (
@@ -1028,7 +1111,11 @@ export default function Home() {
                                     );
                                   }}
                                   className="p-0.5 text-slate-600 transition hover:scale-110 hover:text-amber-400"
-                                  title={nuevaNotaEp === 0 ? 'Quitar puntuación del episodio' : `Puntuar episodio con ${estrellaEp}`}
+                                  title={
+                                    nuevaNotaEp === 0
+                                      ? 'Quitar puntuación del episodio'
+                                      : `Puntuar episodio con ${estrellaEp}`
+                                  }
                                 >
                                   <Star
                                     className={`h-3.5 w-3.5 ${
@@ -1152,7 +1239,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Acceso cuenta y campana en cabecera móvil */}
             <div className="flex items-center gap-2 md:hidden">
               {user ? (
                 <>
@@ -1169,8 +1255,12 @@ export default function Home() {
                     )}
                   </button>
                   <button
-                    onClick={() => setPerfilActivoId(user.id)}
-                    className="rounded-full border border-indigo-400/50 bg-indigo-600/25 px-3 py-1.5 text-xs font-bold text-indigo-200 shadow-sm transition hover:bg-indigo-600 hover:text-white"
+                    onClick={() => abrirPerfil(user.id)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold shadow-sm transition ${
+                      vista === 'perfil' && perfilActivoId === user.id
+                        ? 'border-indigo-400 bg-indigo-600 text-white'
+                        : 'border-indigo-400/50 bg-indigo-600/25 text-indigo-200 hover:bg-indigo-600 hover:text-white'
+                    }`}
                   >
                     @{username || 'usuario'}
                   </button>
@@ -1204,7 +1294,6 @@ export default function Home() {
             />
           </div>
 
-          {/* Navegación escritorio */}
           <div className="hidden items-center gap-2 md:flex">
             <button
               onClick={() => setVista('explorar')}
@@ -1244,6 +1333,18 @@ export default function Home() {
             {user ? (
               <div className="flex items-center gap-2 border-l border-slate-800 pl-3">
                 <button
+                  onClick={() => abrirPerfil(user.id)}
+                  className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+                    vista === 'perfil'
+                      ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                      : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <User className="h-3.5 w-3.5" />
+                  @{username || 'perfil'}
+                </button>
+
+                <button
                   onClick={() => setVista('comunidad')}
                   title="Solicitudes y mensajes"
                   className="relative rounded-xl border border-slate-700 bg-slate-900 p-2 text-slate-200 shadow-sm transition hover:border-indigo-400 hover:text-indigo-300"
@@ -1255,13 +1356,7 @@ export default function Home() {
                     </span>
                   )}
                 </button>
-                <button
-                  onClick={() => setPerfilActivoId(user.id)}
-                  title="Ver y editar mi perfil"
-                  className="rounded-xl border border-indigo-500/40 bg-indigo-600/20 px-3 py-1.5 text-xs font-bold text-indigo-300 transition hover:bg-indigo-600 hover:text-white"
-                >
-                  @{username || 'usuario'}
-                </button>
+
                 <button
                   onClick={() => supabase.auth.signOut()}
                   title="Cerrar sesión"
@@ -1284,13 +1379,22 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
-        {vista === 'comunidad' ? (
+        {vista === 'perfil' && perfilActivoId ? (
+          <UserProfileModal
+            targetUserId={perfilActivoId}
+            currentUser={user}
+            onClose={() => setVista('explorar')}
+            onSelectMedia={(media) => setItemActivo(media)}
+            onRequireAuth={() => setShowAuth(true)}
+            onNotify={mostrarToast}
+          />
+        ) : vista === 'comunidad' ? (
           <ComunidadFeed
             user={user}
             onSelectSerie={(serie: any) =>
               setItemActivo({ ...serie, media_type: serie.media_type || 'tv' })
             }
-            onSelectUser={(uid) => setPerfilActivoId(uid)}
+            onSelectUser={(uid) => abrirPerfil(uid)}
             onRequireAuth={() => setShowAuth(true)}
           />
         ) : (
@@ -1499,7 +1603,11 @@ export default function Home() {
                 {tabBiblioteca === 'estrenos' && (
                   <ProximosEstrenosBar
                     seriesEnSeguimientoIds={todosGuardados
-                      .filter((i) => i.media_type === 'tv' && (i.status === 'watching' || i.status === 'watchlist'))
+                      .filter(
+                        (i) =>
+                          i.media_type === 'tv' &&
+                          (i.status === 'watching' || i.status === 'watchlist')
+                      )
                       .map((i) => i.tmdb_id)}
                     onSelectSerie={(media) => setItemActivo(media)}
                   />
@@ -1544,7 +1652,11 @@ export default function Home() {
                             : 'border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800'
                         }`}
                       >
-                        {nuevaColPublica ? <Globe className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+                        {nuevaColPublica ? (
+                          <Globe className="h-3.5 w-3.5" />
+                        ) : (
+                          <Lock className="h-3.5 w-3.5" />
+                        )}
                         {nuevaColPublica ? 'Pública' : 'Privada'}
                       </button>
 
@@ -1612,7 +1724,9 @@ export default function Home() {
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => handleToggleVisibilidadColeccion(col.id, !col.is_public)}
+                                  onClick={() =>
+                                    handleToggleVisibilidadColeccion(col.id, !col.is_public)
+                                  }
                                   className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
                                     col.is_public
                                       ? 'border-emerald-400/40 bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600/30'
@@ -1633,11 +1747,7 @@ export default function Home() {
 
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    if (confirm(`¿Eliminar la colección "${col.name}"?`)) {
-                                      handleEliminarColeccion(col.id);
-                                    }
-                                  }}
+                                  onClick={() => handleEliminarColeccion(col.id)}
                                   className="rounded-xl border border-red-500/30 bg-red-500/10 p-2 text-red-300 transition hover:border-red-500 hover:bg-red-600 hover:text-white"
                                   title="Eliminar colección"
                                 >
@@ -1773,7 +1883,6 @@ export default function Home() {
         )}
       </main>
 
-      {/* Barra de navegación inferior fija para pantallas móviles */}
       <nav className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-xl md:z-40 md:hidden">
         <button
           onClick={() => setVista('explorar')}
@@ -1812,15 +1921,18 @@ export default function Home() {
         </button>
 
         <button
-          onClick={() => (user ? setPerfilActivoId(user.id) : setShowAuth(true))}
-          className="flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold text-slate-300 transition hover:bg-slate-900 hover:text-white"
+          onClick={() => (user ? abrirPerfil(user.id) : setShowAuth(true))}
+          className={`flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold transition ${
+            vista === 'perfil'
+              ? 'bg-indigo-600/20 text-indigo-300 shadow-inner'
+              : 'text-slate-300 hover:bg-slate-900 hover:text-white'
+          }`}
         >
           <User className="h-5 w-5" />
           <span>{user ? 'Perfil' : 'Entrar'}</span>
         </button>
       </nav>
 
-      {/* Notificación visual flotante (Toast) */}
       {toastMsg && (
         <div className="fixed bottom-20 right-4 z-50 flex items-center gap-2 rounded-2xl border border-indigo-500/40 bg-slate-900/95 px-4 py-2.5 text-xs font-semibold text-white shadow-2xl backdrop-blur-md md:bottom-6">
           <Check className="h-4 w-4 text-emerald-400" />
@@ -1849,20 +1961,22 @@ export default function Home() {
           serie={itemActivo}
           user={user}
           estadoActual={miLista[`${itemActivo.media_type}-${itemActivo.id}`]}
-          onUpdateEstado={(status, rating, season, episode) =>
-            guardarEnNube(itemActivo, status, rating, season, episode)
+          onUpdateEstado={(status, rating, season, episode, extra) =>
+            guardarEnNube(itemActivo, status, rating, season, episode, extra)
           }
+          onUpdateSeguimiento={(extra) => {
+            const actual = miLista[`${itemActivo.media_type}-${itemActivo.id}`];
+            guardarEnNube(
+              itemActivo,
+              actual?.status || 'completed',
+              actual?.rating || 0,
+              actual?.current_season || 1,
+              actual?.current_episode || 1,
+              extra
+            );
+          }}
+          onEliminarEstado={() => eliminarDeLista(itemActivo)}
           onClose={() => setItemActivo(null)}
-          onRequireAuth={() => setShowAuth(true)}
-        />
-      )}
-
-      {perfilActivoId && (
-        <UserProfileModal
-          targetUserId={perfilActivoId}
-          currentUser={user}
-          onClose={() => setPerfilActivoId(null)}
-          onSelectMedia={(media) => setItemActivo(media)}
           onRequireAuth={() => setShowAuth(true)}
         />
       )}

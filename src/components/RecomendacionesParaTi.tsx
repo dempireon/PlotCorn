@@ -9,7 +9,7 @@ const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
 interface ItemBiblioteca {
   tmdb_id: number;
   media_type: MediaType;
-  status: 'watching' | 'completed' | 'watchlist';
+  status: 'watching' | 'completed' | 'watchlist' | 'dropped';
   rating: number;
   title?: string;
 }

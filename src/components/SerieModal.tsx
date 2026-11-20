@@ -4,27 +4,42 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import {
-  X, Star, Eye, Check, Clock, Play, Tv, Film,
-  Calendar, Sparkles, Users, MessageSquare, Send, Share2
+  X, Star, Eye, Check, Clock, PauseCircle, Play, Tv, Film,
+  Calendar, Sparkles, Users, MessageSquare, Send, Share2, Trash2
 } from 'lucide-react';
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
+const RESENAS_POR_PAGINA = 10;
+
+type EstadoMediaModal = 'watching' | 'completed' | 'watchlist' | 'dropped';
+
+export interface SeguimientoExtraModal {
+  started_at?: string | null;
+  finished_at?: string | null;
+  rewatch_count?: number;
+}
 
 interface SerieModalProps {
   serie: MediaTMDB;
   user: any;
   estadoActual?: {
-    status: 'watching' | 'completed' | 'watchlist';
+    status: EstadoMediaModal;
     rating: number;
     current_season: number;
     current_episode: number;
+    started_at?: string | null;
+    finished_at?: string | null;
+    rewatch_count?: number;
   };
   onUpdateEstado: (
-    status: 'watching' | 'completed' | 'watchlist',
+    status: EstadoMediaModal,
     rating: number,
     season?: number,
-    episode?: number
+    episode?: number,
+    extra?: SeguimientoExtraModal
   ) => void;
+  onUpdateSeguimiento?: (extra: SeguimientoExtraModal) => void;
+  onEliminarEstado?: () => void;
   onClose: () => void;
   onRequireAuth: () => void;
 }
@@ -34,6 +49,8 @@ export default function SerieModal({
   user,
   estadoActual,
   onUpdateEstado,
+  onUpdateSeguimiento,
+  onEliminarEstado,
   onClose,
   onRequireAuth,
 }: SerieModalProps) {
@@ -53,12 +70,29 @@ export default function SerieModal({
     Record<string, { rating: number; review: string }>
   >({});
 
+  const [vistosComunidadCount, setVistosComunidadCount] = useState<number>(0);
+  const [mediaComunidad, setMediaComunidad] = useState<number>(0);
+  const [totalValoracionesComunidad, setTotalValoracionesComunidad] = useState<number>(0);
+
   const [comentarios, setComentarios] = useState<any[]>([]);
+  const [totalComentarios, setTotalComentarios] = useState<number>(0);
+  const [cargandoMasCom, setCargandoMasCom] = useState<boolean>(false);
   const [nuevoComentario, setNuevoComentario] = useState('');
   const [enviandoCom, setEnviandoCom] = useState(false);
+  const [eliminandoComId, setEliminandoComId] = useState<string | null>(null);
 
   const [cargando, setCargando] = useState(true);
   const [mediaActiva, setMediaActiva] = useState<MediaTMDB>(serie);
+
+  const [fechaInicioLocal, setFechaInicioLocal] = useState<string>(
+    estadoActual?.started_at || ''
+  );
+  const [fechaFinLocal, setFechaFinLocal] = useState<string>(
+    estadoActual?.finished_at || ''
+  );
+  const [vecesVistaLocal, setVecesVistaLocal] = useState<number>(
+    Number(estadoActual?.rewatch_count || 0)
+  );
 
   const esPeli = mediaActiva.media_type === 'movie';
 
@@ -66,6 +100,18 @@ export default function SerieModal({
     setMediaActiva(serie);
     setMostrarTrailer(false);
   }, [serie]);
+
+  useEffect(() => {
+    setFechaInicioLocal(estadoActual?.started_at || '');
+    setFechaFinLocal(estadoActual?.finished_at || '');
+    setVecesVistaLocal(Number(estadoActual?.rewatch_count || 0));
+  }, [
+    mediaActiva.id,
+    mediaActiva.media_type,
+    estadoActual?.started_at,
+    estadoActual?.finished_at,
+    estadoActual?.rewatch_count,
+  ]);
 
   useEffect(() => {
     cargarFichaCompleta();
@@ -77,6 +123,124 @@ export default function SerieModal({
       recargarEpisodiosVistos();
     }
   }, [temporadaSeleccionada, mediaActiva.id, esPeli, user?.id]);
+
+  useEffect(() => {
+    cargarEstadisticasComunidad();
+  }, [mediaActiva.id, mediaActiva.media_type, estadoActual?.status, estadoActual?.rating]);
+
+  function aplicarCambioEstadisticaOptimista(
+    estadoAnterior: EstadoMediaModal | undefined,
+    notaAnterior: number,
+    estadoNuevo: EstadoMediaModal | null,
+    notaNueva: number
+  ) {
+    const contabaComoVistoAntes = estadoAnterior === 'completed' || notaAnterior > 0;
+    const cuentaComoVistoAhora =
+      estadoNuevo !== null && (estadoNuevo === 'completed' || notaNueva > 0);
+
+    let deltaVistos = 0;
+    if (!contabaComoVistoAntes && cuentaComoVistoAhora) deltaVistos = 1;
+    if (contabaComoVistoAntes && !cuentaComoVistoAhora) deltaVistos = -1;
+
+    const teniaNotaAntes = notaAnterior > 0;
+    const tieneNotaAhora = notaNueva > 0;
+
+    const sumaActual = mediaComunidad * totalValoracionesComunidad;
+    let nuevaSuma = sumaActual;
+    let nuevoTotalNotas = totalValoracionesComunidad;
+
+    if (teniaNotaAntes && !tieneNotaAhora) {
+      nuevaSuma = Math.max(0, sumaActual - notaAnterior);
+      nuevoTotalNotas = Math.max(0, totalValoracionesComunidad - 1);
+    } else if (!teniaNotaAntes && tieneNotaAhora) {
+      nuevaSuma = sumaActual + notaNueva;
+      nuevoTotalNotas = totalValoracionesComunidad + 1;
+    } else if (teniaNotaAntes && tieneNotaAhora && notaAnterior !== notaNueva) {
+      nuevaSuma = sumaActual - notaAnterior + notaNueva;
+    }
+
+    const nuevaMedia =
+      nuevoTotalNotas > 0 ? Number((nuevaSuma / nuevoTotalNotas).toFixed(1)) : 0;
+
+    setVistosComunidadCount((prev) => Math.max(0, prev + deltaVistos));
+    setTotalValoracionesComunidad(nuevoTotalNotas);
+    setMediaComunidad(nuevaMedia);
+  }
+
+  function handleToggleEstado(nuevoEstado: EstadoMediaModal) {
+    if (!user) return onRequireAuth();
+    const estadoPrevio = estadoActual?.status;
+    const notaPrevia = estadoActual?.rating || 0;
+
+    if (estadoPrevio === nuevoEstado && onEliminarEstado) {
+      aplicarCambioEstadisticaOptimista(estadoPrevio, notaPrevia, null, notaPrevia);
+      setVecesVistaLocal(0);
+      onEliminarEstado();
+    } else {
+      aplicarCambioEstadisticaOptimista(estadoPrevio, notaPrevia, nuevoEstado, notaPrevia);
+      if (nuevoEstado === 'completed') {
+        setVecesVistaLocal((prev) => Math.max(1, prev));
+      }
+      onUpdateEstado(nuevoEstado, notaPrevia);
+    }
+
+    setTimeout(() => cargarEstadisticasComunidad(), 400);
+  }
+
+  function handleTogglePuntuacion(num: number) {
+    if (!user) return onRequireAuth();
+    const estadoPrevio = estadoActual?.status;
+    const notaActual = estadoActual?.rating || 0;
+    const nuevaNota = notaActual === num ? 0 : num;
+
+    if (nuevaNota === 0 && estadoPrevio === 'completed' && onEliminarEstado) {
+      aplicarCambioEstadisticaOptimista(estadoPrevio, notaActual, null, 0);
+      setVecesVistaLocal(0);
+      onEliminarEstado();
+      setTimeout(() => cargarEstadisticasComunidad(), 400);
+      return;
+    }
+
+    const estadoParaGuardar: EstadoMediaModal = estadoPrevio || 'completed';
+
+    aplicarCambioEstadisticaOptimista(
+      estadoPrevio,
+      notaActual,
+      estadoParaGuardar,
+      nuevaNota
+    );
+    if (estadoParaGuardar === 'completed') {
+      setVecesVistaLocal((prev) => Math.max(1, prev));
+    }
+    onUpdateEstado(estadoParaGuardar, nuevaNota);
+    setTimeout(() => cargarEstadisticasComunidad(), 400);
+  }
+
+  function actualizarSeguimiento(extra: SeguimientoExtraModal) {
+    if (!user) return onRequireAuth();
+
+    if (extra.started_at !== undefined) {
+      setFechaInicioLocal(extra.started_at || '');
+    }
+    if (extra.finished_at !== undefined) {
+      setFechaFinLocal(extra.finished_at || '');
+    }
+    if (extra.rewatch_count !== undefined) {
+      setVecesVistaLocal(Math.max(0, extra.rewatch_count));
+    }
+
+    if (onUpdateSeguimiento) {
+      onUpdateSeguimiento(extra);
+      return;
+    }
+    onUpdateEstado(
+      estadoActual?.status || 'completed',
+      estadoActual?.rating || 0,
+      estadoActual?.current_season || 1,
+      estadoActual?.current_episode || 1,
+      extra
+    );
+  }
 
   async function compartirFicha() {
     const url = `${window.location.origin}/?media=${mediaActiva.media_type || 'tv'}-${mediaActiva.id}`;
@@ -93,6 +257,38 @@ export default function SerieModal({
     await navigator.clipboard.writeText(url);
     setCopiadoEnlace(true);
     setTimeout(() => setCopiadoEnlace(false), 2500);
+  }
+
+  async function cargarEstadisticasComunidad() {
+    const tipo = mediaActiva.media_type || 'tv';
+
+    const { data: filas } = await supabase
+      .from('user_series')
+      .select('user_id, status, rating')
+      .eq('tmdb_id', mediaActiva.id)
+      .eq('media_type', tipo);
+
+    const registros = filas || [];
+    const usuariosVistos = new Set(
+      registros
+        .filter((r: any) => r.status === 'completed' || Number(r.rating) > 0)
+        .map((r: any) => r.user_id)
+    );
+
+    const notasValidas = registros
+      .map((r: any) => Number(r.rating))
+      .filter((n) => !Number.isNaN(n) && n > 0 && n <= 5);
+
+    const promedio =
+      notasValidas.length > 0
+        ? Number(
+            (notasValidas.reduce((acc, n) => acc + n, 0) / notasValidas.length).toFixed(1)
+          )
+        : 0;
+
+    setVistosComunidadCount(usuariosVistos.size);
+    setMediaComunidad(promedio);
+    setTotalValoracionesComunidad(notasValidas.length);
   }
 
   async function cargarFichaCompleta() {
@@ -194,7 +390,7 @@ export default function SerieModal({
         setEpisodiosVistosMap({});
       }
 
-      await cargarComentarios();
+      await Promise.all([cargarComentarios(true), cargarEstadisticasComunidad()]);
     } catch (err) {
       console.error('Error cargando ficha:', err);
     }
@@ -274,8 +470,13 @@ export default function SerieModal({
         { onConflict: 'user_id,tmdb_id,season_number,episode_number' }
       );
 
+      const estadoSiguiente: EstadoMediaModal =
+        estadoActual?.status === 'completed' || estadoActual?.status === 'dropped'
+          ? estadoActual.status
+          : 'watching';
+
       onUpdateEstado(
-        estadoActual?.status === 'completed' ? 'completed' : 'watching',
+        estadoSiguiente,
         estadoActual?.rating || 0,
         seasonNum,
         episodeNum
@@ -304,15 +505,26 @@ export default function SerieModal({
     );
   }
 
-  async function cargarComentarios() {
-    const { data } = await supabase
+  async function cargarComentarios(reset = true) {
+    const inicio = reset ? 0 : comentarios.length;
+    const fin = inicio + RESENAS_POR_PAGINA - 1;
+
+    if (!reset) setCargandoMasCom(true);
+
+    const { data, count } = await supabase
       .from('comments')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('tmdb_id', mediaActiva.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(inicio, fin);
+
+    if (typeof count === 'number') {
+      setTotalComentarios(count);
+    }
 
     if (!data || data.length === 0) {
-      setComentarios([]);
+      if (reset) setComentarios([]);
+      setCargandoMasCom(false);
       return;
     }
 
@@ -327,34 +539,57 @@ export default function SerieModal({
       pMap[p.id] = p.username;
     });
 
-    setComentarios(
-      data.map((c: any) => ({
-        ...c,
-        username: pMap[c.user_id] || 'usuario',
-      }))
-    );
+    const formateados = data.map((c: any) => ({
+      ...c,
+      username: pMap[c.user_id] || 'usuario',
+    }));
+
+    setComentarios((prev) => (reset ? formateados : [...prev, ...formateados]));
+    setCargandoMasCom(false);
   }
 
   async function publicarComentario(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return onRequireAuth();
-    if (!nuevoComentario.trim() || enviandoCom) return;
+    const texto = nuevoComentario.trim();
+    if (texto.length < 2 || texto.length > 500 || enviandoCom) return;
 
     setEnviandoCom(true);
-    const texto = nuevoComentario.trim();
     setNuevoComentario('');
 
-    const { error } = await supabase.from('comments').insert({
-      user_id: user.id,
-      tmdb_id: mediaActiva.id,
-      media_type: mediaActiva.media_type || 'tv',
-      content: texto,
-    });
+    const { error } = await supabase.from('comments').upsert(
+      {
+        user_id: user.id,
+        tmdb_id: mediaActiva.id,
+        media_type: mediaActiva.media_type || 'tv',
+        content: texto,
+        rating: estadoActual?.rating || 0,
+        created_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,tmdb_id,media_type' }
+    );
 
     if (!error) {
-      await cargarComentarios();
+      await cargarComentarios(true);
     }
     setEnviandoCom(false);
+  }
+
+  async function eliminarComentario(commentId: string) {
+    if (!user || eliminandoComId) return;
+    setEliminandoComId(commentId);
+
+    const { error } = await supabase
+      .from('comments')
+      .delete()
+      .eq('id', commentId)
+      .eq('user_id', user.id);
+
+    if (!error) {
+      setComentarios((prev) => prev.filter((c) => c.id !== commentId));
+      setTotalComentarios((prev) => Math.max(0, prev - 1));
+    }
+    setEliminandoComId(null);
   }
 
   const titulo = detalle?.title || detalle?.name || mediaActiva.name;
@@ -365,10 +600,13 @@ export default function SerieModal({
       ? `${detalle.runtime} min`
       : null
     : detalle?.number_of_seasons
-    ? `${detalle.number_of_seasons} temp${detalle.number_of_seasons > 1 ? 's' : ''}`
-    : null;
+      ? `${detalle.number_of_seasons} temp${detalle.number_of_seasons > 1 ? 's' : ''}`
+      : null;
 
   const temporadasValidas = (detalle?.seasons || []).filter((s: any) => s.season_number > 0);
+  const miNota = estadoActual?.rating || 0;
+  const hayComparativa = miNota > 0 && mediaComunidad > 0;
+  const diff = hayComparativa ? Number((miNota - mediaComunidad).toFixed(1)) : 0;
 
   return (
     <div
@@ -379,7 +617,6 @@ export default function SerieModal({
         onClick={(e) => e.stopPropagation()}
         className="max-h-[93vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
       >
-        {/* Cabecera compacta en móvil y amplia en escritorio */}
         <div className="relative border-b border-slate-800 bg-slate-900">
           {detalle?.backdrop_path && (
             <img
@@ -391,6 +628,7 @@ export default function SerieModal({
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/85 to-slate-950/45" />
 
           <button
+            type="button"
             onClick={onClose}
             aria-label="Cerrar ficha"
             className="absolute right-3 top-3 z-10 rounded-full bg-slate-950/85 p-2 text-slate-300 backdrop-blur-md transition hover:bg-slate-800 hover:text-white sm:right-4 sm:top-4"
@@ -457,10 +695,10 @@ export default function SerieModal({
                 </div>
               )}
 
-              {/* Controles compactos en móvil */}
               <div className="flex flex-wrap items-center gap-1.5 pt-0.5 sm:gap-2 sm:pt-1">
                 <button
-                  onClick={() => onUpdateEstado('watching', estadoActual?.rating || 0)}
+                  type="button"
+                  onClick={() => handleToggleEstado('watching')}
                   className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'watching'
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
@@ -472,7 +710,8 @@ export default function SerieModal({
                 </button>
 
                 <button
-                  onClick={() => onUpdateEstado('completed', estadoActual?.rating || 0)}
+                  type="button"
+                  onClick={() => handleToggleEstado('completed')}
                   className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'completed'
                       ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
@@ -484,7 +723,8 @@ export default function SerieModal({
                 </button>
 
                 <button
-                  onClick={() => onUpdateEstado('watchlist', estadoActual?.rating || 0)}
+                  type="button"
+                  onClick={() => handleToggleEstado('watchlist')}
                   className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
                     estadoActual?.status === 'watchlist'
                       ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
@@ -495,19 +735,29 @@ export default function SerieModal({
                   Pendiente
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => handleToggleEstado('dropped')}
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
+                    estadoActual?.status === 'dropped'
+                      ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
+                      : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-rose-500'
+                  }`}
+                >
+                  <PauseCircle className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                  Abandonada
+                </button>
+
                 <div className="flex items-center gap-0.5 rounded-lg border border-slate-800 bg-slate-900/90 px-2 py-1 sm:gap-1 sm:rounded-xl sm:px-2.5 sm:py-1.5">
                   {[1, 2, 3, 4, 5].map((num) => {
                     const notaActual = estadoActual?.rating || 0;
-                    const nuevaNota = notaActual === num ? 0 : num;
                     return (
                       <button
                         key={num}
                         type="button"
-                        onClick={() =>
-                          onUpdateEstado(estadoActual?.status || 'completed', nuevaNota)
-                        }
+                        onClick={() => handleTogglePuntuacion(num)}
                         className="text-slate-600 transition hover:scale-110 hover:text-amber-400"
-                        title={nuevaNota === 0 ? 'Quitar puntuación' : `Puntuar con ${num}`}
+                        title={notaActual === num ? 'Quitar puntuación' : `Puntuar con ${num}`}
                       >
                         <Star
                           className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
@@ -523,6 +773,7 @@ export default function SerieModal({
 
                 {trailerKey && (
                   <button
+                    type="button"
                     onClick={() => setMostrarTrailer(!mostrarTrailer)}
                     className="flex items-center gap-1 rounded-lg bg-rose-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-lg shadow-rose-600/30 transition hover:bg-rose-500 sm:gap-1.5 sm:rounded-xl sm:px-3.5 sm:py-1.5 sm:text-xs"
                   >
@@ -532,6 +783,7 @@ export default function SerieModal({
                 )}
 
                 <button
+                  type="button"
                   onClick={compartirFicha}
                   className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900/90 px-2.5 py-1 text-[11px] font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs"
                 >
@@ -552,7 +804,6 @@ export default function SerieModal({
           </div>
         </div>
 
-        {/* Contenido principal con espacio cómodo en móvil */}
         <div className="space-y-4 p-4 sm:space-y-6 sm:p-6">
           {cargando ? (
             <div className="py-12 text-center text-sm text-slate-400">
@@ -573,6 +824,78 @@ export default function SerieModal({
                   </div>
                 </div>
               )}
+
+              {/* Seguimiento personal: Fecha inicio, Fecha fin y Veces vista */}
+              <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Tu seguimiento personal
+                </h3>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-slate-400">
+                      Fecha inicio
+                    </label>
+                    <input
+                      type="date"
+                      value={fechaInicioLocal}
+                      onChange={(e) =>
+                        actualizarSeguimiento({ started_at: e.target.value || null })
+                      }
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-slate-400">
+                      Fecha fin
+                    </label>
+                    <input
+                      type="date"
+                      value={fechaFinLocal}
+                      onChange={(e) =>
+                        actualizarSeguimiento({ finished_at: e.target.value || null })
+                      }
+                      className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-xs text-white focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold text-slate-400">
+                      Veces vista
+                    </label>
+                    <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950 px-2 py-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          actualizarSeguimiento({
+                            rewatch_count: Math.max(0, vecesVistaLocal - 1),
+                          })
+                        }
+                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-slate-300 transition hover:bg-slate-800 hover:text-white"
+                      >
+                        -
+                      </button>
+
+                      <span className="text-xs font-extrabold text-white">
+                        {vecesVistaLocal} {vecesVistaLocal === 1 ? 'vez' : 'veces'}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          actualizarSeguimiento({
+                            rewatch_count: vecesVistaLocal + 1,
+                          })
+                        }
+                        className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold text-white transition hover:bg-indigo-500"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
 
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                 <div className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4 lg:col-span-2">
@@ -618,38 +941,147 @@ export default function SerieModal({
                 </div>
               </div>
 
-              {reparto.length > 0 && (
-                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
-                  <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
-                    <Users className="h-3.5 w-3.5 text-indigo-400" />
-                    Reparto principal
-                  </h3>
-                  <div className="flex gap-3 overflow-x-auto pb-2">
-                    {reparto.map((actor: any) => (
-                      <div
-                        key={actor.id}
-                        className="w-24 shrink-0 rounded-xl border border-slate-800 bg-slate-950 p-2 text-center"
-                      >
-                        <img
-                          src={
-                            actor.profile_path
-                              ? `https://image.tmdb.org/t/p/w185${actor.profile_path}`
-                              : 'https://via.placeholder.com/185x278/1e293b/94a3b8?text=Sin+Foto'
-                          }
-                          alt={actor.name}
-                          className="mx-auto h-24 w-20 rounded-lg object-cover"
-                        />
-                        <p className="mt-1.5 line-clamp-1 text-[11px] font-bold text-white">
-                          {actor.name}
+              <section className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <MessageSquare className="h-3.5 w-3.5 text-indigo-400" />
+                  Comunidad, puntuaciones y reseñas ({totalComentarios})
+                </h3>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                    <p className="text-[11px] font-semibold text-slate-400">Lo han visto</p>
+                    <p className="mt-1 text-lg font-extrabold text-emerald-300">
+                      {vistosComunidadCount}{' '}
+                      <span className="text-xs font-medium text-slate-400">
+                        {vistosComunidadCount === 1 ? 'usuario' : 'usuarios'}
+                      </span>
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3">
+                    <p className="text-[11px] font-semibold text-slate-400">Media de la comunidad</p>
+                    <p className="mt-1 flex items-center gap-1.5 text-lg font-extrabold text-amber-300">
+                      <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                      {mediaComunidad > 0 ? `${mediaComunidad} / 5` : 'Sin notas'}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({totalValoracionesComunidad})
+                      </span>
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-indigo-500/25 bg-indigo-950/20 p-3">
+                    <p className="text-[11px] font-semibold text-indigo-200">Tu nota vs comunidad</p>
+                    {hayComparativa ? (
+                      <div className="mt-1">
+                        <p className="text-sm font-extrabold text-white">
+                          Tú: ★ {miNota} · Media: ★ {mediaComunidad}
                         </p>
-                        <p className="line-clamp-1 text-[10px] text-slate-400">
-                          {actor.character}
+                        <p
+                          className={`text-[11px] font-bold ${
+                            diff > 0
+                              ? 'text-emerald-400'
+                              : diff < 0
+                              ? 'text-rose-400'
+                              : 'text-slate-300'
+                          }`}
+                        >
+                          {diff > 0
+                            ? `+${diff} ★ por encima de la media`
+                            : diff < 0
+                            ? `${diff} ★ por debajo de la media`
+                            : 'Igual que la media de la comunidad'}
                         </p>
                       </div>
-                    ))}
+                    ) : (
+                      <p className="mt-1 text-xs text-slate-400">
+                        {miNota === 0
+                          ? 'Puntúa el título arriba para comparar con la media.'
+                          : 'Aún no hay suficientes valoraciones de otros usuarios.'}
+                      </p>
+                    )}
                   </div>
-                </section>
-              )}
+                </div>
+
+                <form onSubmit={publicarComentario} className="flex gap-2">
+                  <input
+                    type="text"
+                    maxLength={500}
+                    value={nuevoComentario}
+                    onChange={(e) => setNuevoComentario(e.target.value)}
+                    placeholder="Escribe o actualiza tu reseña (máx. 500 caracteres)..."
+                    className="min-w-0 flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={nuevoComentario.trim().length < 2 || enviandoCom}
+                    className="flex shrink-0 items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    Publicar
+                  </button>
+                </form>
+
+                {comentarios.length > 0 && (
+                  <div className="space-y-2.5 pt-1">
+                    <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                      {comentarios.map((com) => {
+                        const notaCom = Number(com.rating || 0);
+                        const esMio = user?.id && com.user_id === user.id;
+                        return (
+                          <div
+                            key={com.id}
+                            className="rounded-xl border border-slate-800 bg-slate-950/80 px-3.5 py-2.5"
+                          >
+                            <div className="flex items-center justify-between gap-2 text-[11px]">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-indigo-400">@{com.username}</span>
+                                {notaCom > 0 && (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                                    <Star className="h-2.5 w-2.5 fill-amber-400 text-amber-400" />
+                                    {notaCom}/5
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-500">
+                                  {new Date(com.created_at).toLocaleDateString('es-ES')}
+                                </span>
+                                {esMio && (
+                                  <button
+                                    type="button"
+                                    onClick={() => eliminarComentario(com.id)}
+                                    disabled={eliminandoComId === com.id}
+                                    className="rounded-lg p-1 text-slate-500 transition hover:bg-rose-500/15 hover:text-rose-400 disabled:opacity-50"
+                                    title="Eliminar mi reseña"
+                                    aria-label="Eliminar mi reseña"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-200">{com.content}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {comentarios.length < totalComentarios && (
+                      <button
+                        type="button"
+                        onClick={() => cargarComentarios(false)}
+                        disabled={cargandoMasCom}
+                        className="w-full rounded-xl border border-slate-800 bg-slate-950/90 py-2 text-xs font-bold text-indigo-300 transition hover:border-indigo-500/50 hover:text-white disabled:opacity-50"
+                      >
+                        {cargandoMasCom
+                          ? 'Cargando reseñas...'
+                          : `Ver más reseñas (${comentarios.length} de ${totalComentarios})`}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </section>
 
               {!esPeli && temporadasValidas.length > 0 && (
                 <section className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
@@ -661,6 +1093,7 @@ export default function SerieModal({
                       {temporadasValidas.map((temp: any) => (
                         <button
                           key={temp.season_number}
+                          type="button"
                           onClick={() => setTemporadaSeleccionada(temp.season_number)}
                           className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
                             temporadaSeleccionada === temp.season_number
@@ -691,6 +1124,7 @@ export default function SerieModal({
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <button
+                              type="button"
                               onClick={() =>
                                 toggleEpisodioVisto(temporadaSeleccionada, ep.episode_number)
                               }
@@ -749,6 +1183,39 @@ export default function SerieModal({
                 </section>
               )}
 
+              {reparto.length > 0 && (
+                <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
+                  <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
+                    <Users className="h-3.5 w-3.5 text-indigo-400" />
+                    Reparto principal
+                  </h3>
+                  <div className="flex gap-3 overflow-x-auto pb-2">
+                    {reparto.map((actor: any) => (
+                      <div
+                        key={actor.id}
+                        className="w-24 shrink-0 rounded-xl border border-slate-800 bg-slate-950 p-2 text-center"
+                      >
+                        <img
+                          src={
+                            actor.profile_path
+                              ? `https://image.tmdb.org/t/p/w185${actor.profile_path}`
+                              : 'https://via.placeholder.com/185x278/1e293b/94a3b8?text=Sin+Foto'
+                          }
+                          alt={actor.name}
+                          className="mx-auto h-24 w-20 rounded-lg object-cover"
+                        />
+                        <p className="mt-1.5 line-clamp-1 text-[11px] font-bold text-white">
+                          {actor.name}
+                        </p>
+                        <p className="line-clamp-1 text-[10px] text-slate-400">
+                          {actor.character}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               {similares.length > 0 && (
                 <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                   <h3 className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -778,50 +1245,6 @@ export default function SerieModal({
                   </div>
                 </section>
               )}
-
-              <section className="space-y-3 rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
-                <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-400">
-                  <MessageSquare className="h-3.5 w-3.5 text-indigo-400" />
-                  Opiniones de la comunidad ({comentarios.length})
-                </h3>
-
-                <form onSubmit={publicarComentario} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={nuevoComentario}
-                    onChange={(e) => setNuevoComentario(e.target.value)}
-                    placeholder="Escribe qué te pareció este título..."
-                    className="flex-1 rounded-xl border border-slate-800 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!nuevoComentario.trim() || enviandoCom}
-                    className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50"
-                  >
-                    <Send className="h-3.5 w-3.5" />
-                    Publicar
-                  </button>
-                </form>
-
-                {comentarios.length > 0 && (
-                  <div className="space-y-2 pt-1">
-                    {comentarios.map((com) => (
-                      <div
-                        key={com.id}
-                        className="rounded-xl border border-slate-800 bg-slate-950/80 px-3.5 py-2.5"
-                      >
-                        <div className="flex items-center justify-between text-[11px]">
-                          <span className="font-bold text-indigo-400">@{com.username}</span>
-                          <span className="text-slate-500">
-                            {new Date(com.created_at).toLocaleDateString('es-ES')}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-xs text-slate-200">{com.content}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </section>
             </>
           )}
         </div>

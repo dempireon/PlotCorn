@@ -15,6 +15,14 @@ interface ComunidadFeedProps {
   onRequireAuth: () => void;
 }
 
+type TipoReaccion = 'fire' | 'heart' | 'eyes';
+
+const OPCIONES_REACCION: { key: TipoReaccion; emoji: string; label: string }[] = [
+  { key: 'fire', emoji: '🔥', label: 'Top' },
+  { key: 'heart', emoji: '❤️', label: 'Me encanta' },
+  { key: 'eyes', emoji: '👀', label: 'Qué ganas' },
+];
+
 export default function ComunidadFeed({
   user,
   onSelectSerie,
@@ -25,6 +33,11 @@ export default function ComunidadFeed({
   const [mostrarTodoFeed, setMostrarTodoFeed] = useState(false);
   const [tabComunidad, setTabComunidad] = useState<'actividad' | 'amigos'>('actividad');
   const [filtroAmigoId, setFiltroAmigoId] = useState<string>('all');
+
+  // Mapa de reacciones por clave `${activity_user_id}-${media_type}-${tmdb_id}`
+  const [reaccionesMap, setReaccionesMap] = useState<
+    Record<string, { counts: Record<TipoReaccion, number>; mia?: TipoReaccion }>
+  >({});
 
   const [usuariosBusqueda, setUsuariosBusqueda] = useState<any[]>([]);
   const [busquedaUser, setBusquedaUser] = useState('');
@@ -81,18 +94,43 @@ export default function ComunidadFeed({
       });
     }
 
+    // Cargar reacciones de las actividades visibles
+    if (userIds.length > 0 && tmdbIds.length > 0) {
+      const { data: reacts } = await supabase
+        .from('activity_reactions')
+        .select('*')
+        .in('activity_user_id', userIds)
+        .in('tmdb_id', tmdbIds);
+
+      const mapaR: Record<string, { counts: Record<TipoReaccion, number>; mia?: TipoReaccion }> = {};
+      (reacts || []).forEach((r: any) => {
+        const key = `${r.activity_user_id}-${r.media_type || 'tv'}-${r.tmdb_id}`;
+        if (!mapaR[key]) {
+          mapaR[key] = { counts: { fire: 0, heart: 0, eyes: 0 } };
+        }
+        const tipo = r.reaction as TipoReaccion;
+        if (mapaR[key].counts[tipo] !== undefined) {
+          mapaR[key].counts[tipo] += 1;
+        }
+        if (user?.id && r.reactor_user_id === user.id) {
+          mapaR[key].mia = tipo;
+        }
+      });
+      setReaccionesMap(mapaR);
+    } else {
+      setReaccionesMap({});
+    }
+
     setActividad(
-      (acts || [])
-        .filter((a: any) => (!user?.id ? true : a.user_id !== user.id))
-        .map((a: any) => {
-          const clave = `${a.media_type || 'tv'}-${a.tmdb_id}`;
-          return {
-            ...a,
-            username: perfilesMap[a.user_id] || 'usuario',
-            title: cacheMap[clave]?.title || 'Título',
-            poster_path: cacheMap[clave]?.poster_path || null,
-          };
-        })
+      (acts || []).map((a: any) => {
+        const clave = `${a.media_type || 'tv'}-${a.tmdb_id}`;
+        return {
+          ...a,
+          username: perfilesMap[a.user_id] || 'usuario',
+          title: cacheMap[clave]?.title || 'Título',
+          poster_path: cacheMap[clave]?.poster_path || null,
+        };
+      })
     );
 
     if (user) {
@@ -161,6 +199,53 @@ export default function ComunidadFeed({
     setCargando(false);
   }
 
+  async function toggleReaccion(act: any, tipo: TipoReaccion) {
+    if (!user) return onRequireAuth();
+
+    const mediaType = act.media_type || 'tv';
+    const key = `${act.user_id}-${mediaType}-${act.tmdb_id}`;
+    const actual = reaccionesMap[key] || { counts: { fire: 0, heart: 0, eyes: 0 } };
+    const yaPuesta = actual.mia === tipo;
+
+    // Actualización optimista
+    const nuevosCounts = { ...actual.counts };
+    if (actual.mia) {
+      nuevosCounts[actual.mia] = Math.max(0, nuevosCounts[actual.mia] - 1);
+    }
+    if (!yaPuesta) {
+      nuevosCounts[tipo] = (nuevosCounts[tipo] || 0) + 1;
+    }
+
+    setReaccionesMap((prev) => ({
+      ...prev,
+      [key]: {
+        counts: nuevosCounts,
+        mia: yaPuesta ? undefined : tipo,
+      },
+    }));
+
+    if (yaPuesta) {
+      await supabase
+        .from('activity_reactions')
+        .delete()
+        .eq('activity_user_id', act.user_id)
+        .eq('tmdb_id', act.tmdb_id)
+        .eq('media_type', mediaType)
+        .eq('reactor_user_id', user.id);
+    } else {
+      await supabase.from('activity_reactions').upsert(
+        {
+          activity_user_id: act.user_id,
+          tmdb_id: act.tmdb_id,
+          media_type: mediaType,
+          reactor_user_id: user.id,
+          reaction: tipo,
+        },
+        { onConflict: 'activity_user_id,tmdb_id,media_type,reactor_user_id' }
+      );
+    }
+  }
+
   async function buscarUsuarios(texto: string) {
     setBusquedaUser(texto);
     if (!texto.trim()) {
@@ -200,6 +285,11 @@ export default function ComunidadFeed({
   const actividadVisible = mostrarTodoFeed
     ? actividadFiltrada
     : actividadFiltrada.slice(0, 8);
+
+  const amigoSeleccionado =
+    filtroAmigoId !== 'all' && filtroAmigoId !== 'friends_only'
+      ? amigos.find((a) => a.id === filtroAmigoId)
+      : null;
 
   return (
     <div className="space-y-6">
@@ -309,7 +399,7 @@ export default function ComunidadFeed({
                 </button>
 
                 <select
-                  value={filtroAmigoId === 'all' || filtroAmigoId === 'friends_only' ? '' : filtroAmigoId}
+                  value={amigoSeleccionado ? filtroAmigoId : ''}
                   onChange={(e) => {
                     if (e.target.value) {
                       setFiltroAmigoId(e.target.value);
@@ -317,7 +407,7 @@ export default function ComunidadFeed({
                     }
                   }}
                   className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-bold transition focus:outline-none ${
-                    filtroAmigoId !== 'all' && filtroAmigoId !== 'friends_only'
+                    amigoSeleccionado
                       ? 'border-indigo-400 bg-indigo-600 text-white'
                       : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-indigo-500/60'
                   }`}
@@ -338,14 +428,16 @@ export default function ComunidadFeed({
           {cargando ? (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {[...Array(4)].map((_, i) => (
-                <div key={i} className="h-20 animate-pulse rounded-2xl border border-slate-800 bg-slate-950/70" />
+                <div key={i} className="h-24 animate-pulse rounded-2xl border border-slate-800 bg-slate-950/70" />
               ))}
             </div>
           ) : actividadVisible.length === 0 ? (
             <div className="rounded-2xl border border-slate-800/80 bg-slate-950/50 py-10 text-center">
               <p className="text-xs text-slate-400">
-                {filtroAmigoId !== 'all'
-                  ? 'No hay actividad reciente con este filtro de amigos.'
+                {amigoSeleccionado
+                  ? `@${amigoSeleccionado.username} no tiene actividad reciente.`
+                  : filtroAmigoId === 'friends_only'
+                  ? 'Tus amigos no tienen actividad reciente.'
                   : 'Por ahora no hay actividad reciente de otros miembros.'}
               </p>
               {filtroAmigoId !== 'all' && (
@@ -360,61 +452,25 @@ export default function ComunidadFeed({
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {actividadVisible.map((act) => (
-                <div
-                  key={act.id}
-                  className="group flex items-center gap-3.5 rounded-2xl border border-slate-800/90 bg-slate-950/85 p-3 transition hover:border-indigo-500/45"
-                >
-                  <img
-                    src={getPosterUrl(act.poster_path, 'w342')}
-                    alt={act.title}
-                    onClick={() =>
-                      onSelectSerie({
-                        id: act.tmdb_id,
-                        media_type: act.media_type || 'tv',
-                        name: act.title,
-                        overview: '',
-                        poster_path: act.poster_path,
-                        backdrop_path: null,
-                        first_air_date: '',
-                        vote_average: act.rating || 0,
-                      })
-                    }
-                    className="h-14 w-10 shrink-0 cursor-pointer rounded-lg border border-slate-800 object-cover transition group-hover:scale-105"
-                  />
+              {actividadVisible.map((act) => {
+                const mediaType = act.media_type || 'tv';
+                const reactKey = `${act.user_id}-${mediaType}-${act.tmdb_id}`;
+                const reactInfo = reaccionesMap[reactKey] || {
+                  counts: { fire: 0, heart: 0, eyes: 0 },
+                };
 
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onSelectUser(act.user_id)}
-                        className="truncate text-xs font-bold text-indigo-400 hover:underline"
-                      >
-                        @{act.username}
-                      </button>
-
-                      <span
-                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                          act.status === 'completed'
-                            ? 'bg-emerald-500/20 text-emerald-300'
-                            : act.status === 'watching'
-                            ? 'bg-indigo-500/20 text-indigo-300'
-                            : 'bg-amber-500/20 text-amber-300'
-                        }`}
-                      >
-                        {act.status === 'completed'
-                          ? 'Vista'
-                          : act.status === 'watching'
-                          ? `Viendo · T${act.current_season} E${act.current_episode}`
-                          : 'Pendiente'}
-                      </span>
-                    </div>
-
-                    <p
+                return (
+                  <div
+                    key={act.id}
+                    className="group flex items-start gap-3.5 rounded-2xl border border-slate-800/90 bg-slate-950/85 p-3 transition hover:border-indigo-500/45"
+                  >
+                    <img
+                      src={getPosterUrl(act.poster_path, 'w342')}
+                      alt={act.title}
                       onClick={() =>
                         onSelectSerie({
                           id: act.tmdb_id,
-                          media_type: act.media_type || 'tv',
+                          media_type: mediaType,
                           name: act.title,
                           overview: '',
                           poster_path: act.poster_path,
@@ -423,20 +479,96 @@ export default function ComunidadFeed({
                           vote_average: act.rating || 0,
                         })
                       }
-                      className="mt-1 cursor-pointer truncate text-sm font-semibold text-white transition hover:text-indigo-300"
-                    >
-                      {act.title}
-                    </p>
+                      className="h-16 w-11 shrink-0 cursor-pointer rounded-lg border border-slate-800 object-cover transition group-hover:scale-105"
+                    />
 
-                    {act.rating > 0 && (
-                      <div className="mt-0.5 flex items-center gap-1 text-xs font-bold text-amber-400">
-                        <Star className="h-3 w-3 fill-amber-400" />
-                        <span>{act.rating}/5</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onSelectUser(act.user_id)}
+                          className="truncate text-xs font-bold text-indigo-400 hover:underline"
+                        >
+                          @{act.username}
+                        </button>
+
+                        <span
+  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+    act.status === 'completed'
+      ? 'bg-emerald-500/20 text-emerald-300'
+      : act.status === 'watching'
+      ? 'bg-indigo-500/20 text-indigo-300'
+      : act.status === 'dropped'
+      ? 'bg-rose-500/20 text-rose-300'
+      : 'bg-amber-500/20 text-amber-300'
+  }`}
+>
+  {act.status === 'completed'
+    ? 'Vista'
+    : act.status === 'watching'
+    ? `Viendo · T${act.current_season} E${act.current_episode}`
+    : act.status === 'dropped'
+    ? 'Abandonada'
+    : 'Pendiente'}
+</span>
                       </div>
-                    )}
+
+                      <p
+                        onClick={() =>
+                          onSelectSerie({
+                            id: act.tmdb_id,
+                            media_type: mediaType,
+                            name: act.title,
+                            overview: '',
+                            poster_path: act.poster_path,
+                            backdrop_path: null,
+                            first_air_date: '',
+                            vote_average: act.rating || 0,
+                          })
+                        }
+                        className="mt-1 cursor-pointer truncate text-sm font-semibold text-white transition hover:text-indigo-300"
+                      >
+                        {act.title}
+                      </p>
+
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                        {act.rating > 0 ? (
+                          <div className="flex items-center gap-1 text-xs font-bold text-amber-400">
+                            <Star className="h-3 w-3 fill-amber-400" />
+                            <span>{act.rating}/5</span>
+                          </div>
+                        ) : (
+                          <span />
+                        )}
+
+                        {/* Botones de reacción rápida */}
+                        <div className="flex items-center gap-1">
+                          {OPCIONES_REACCION.map((op) => {
+                            const activa = reactInfo.mia === op.key;
+                            const total = reactInfo.counts[op.key] || 0;
+                            return (
+                              <button
+                                key={op.key}
+                                type="button"
+                                onClick={() => toggleReaccion(act, op.key)}
+                                title={op.label}
+                                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-bold transition active:scale-95 ${
+                                  activa
+                                    ? 'border-indigo-400/70 bg-indigo-600/30 text-white'
+                                    : 'border-slate-800 bg-slate-900/90 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                                }`}
+                              >
+                                <span>{op.emoji}</span>
+                                {total > 0 && <span>{total}</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -538,10 +670,11 @@ export default function ComunidadFeed({
               {amigos.map((am) => {
                 const sinLeer = mensajesNoLeidos[am.id] || 0;
                 return (
-                  <div
+                  <button
                     key={am.id}
+                    type="button"
                     onClick={() => onSelectUser(am.id)}
-                    className={`flex cursor-pointer items-center justify-between rounded-2xl border p-3 transition hover:border-indigo-500/60 ${
+                    className={`flex items-center justify-between rounded-2xl border p-3 text-left transition hover:border-indigo-500/60 ${
                       sinLeer > 0
                         ? 'border-indigo-400/60 bg-indigo-950/35'
                         : 'border-slate-800 bg-slate-950/85 hover:bg-slate-900'
@@ -565,7 +698,7 @@ export default function ComunidadFeed({
                         </span>
                       )}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
