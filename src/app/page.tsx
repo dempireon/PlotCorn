@@ -309,8 +309,18 @@ export default function Home() {
   }, []);
 
   const cargarNotificacionesSociales = useCallback(async () => {
-    if (!user) return;
-    const [{ count: solCount }, { count: msgCount }, { count: grpInvCount }] = await Promise.all([
+    if (!user?.id) return;
+
+    const ahoraMenos24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const [
+      { count: solCount },
+      { count: msgCount },
+      { count: grpInvCount },
+      { data: misGruposRows },
+      { data: grpMsgsRows },
+      { data: titleMsgsRows },
+    ] = await Promise.all([
       supabase
         .from('friendships')
         .select('*', { count: 'exact', head: true })
@@ -326,67 +336,148 @@ export default function Home() {
         .select('*', { count: 'exact', head: true })
         .eq('invitee_id', user.id)
         .eq('status', 'pending'),
+      supabase
+        .from('friend_group_members')
+        .select('group_id')
+        .eq('user_id', user.id),
+      supabase
+        .from('friend_group_messages')
+        .select('id, group_id, sender_id, user_id, created_at')
+        .gte('created_at', ahoraMenos24h),
+      supabase
+        .from('title_friend_chat_messages')
+        .select('id, sender_id, user_id, created_at')
+        .gte('created_at', ahoraMenos24h),
     ]);
-    setNotificacionesCount((solCount || 0) + (msgCount || 0) + (grpInvCount || 0));
-  }, [user]);
+
+    const misGruposSet = new Set(
+      (misGruposRows || []).map((g: any) => String(g.group_id))
+    );
+
+    const mensajesGrupoAjenos = (grpMsgsRows || []).filter((m: any) => {
+      const autor = m.sender_id ?? m.user_id;
+      const perteneceAlGrupo =
+        misGruposSet.size === 0 || !m.group_id || misGruposSet.has(String(m.group_id));
+      return perteneceAlGrupo && autor && String(autor) !== String(user.id);
+    }).length;
+
+    const mensajesTituloAjenos = (titleMsgsRows || []).filter((m: any) => {
+      const autor = m.sender_id ?? m.user_id;
+      return autor && String(autor) !== String(user.id);
+    }).length;
+
+    setNotificacionesCount(
+      (solCount || 0) +
+        (msgCount || 0) +
+        (grpInvCount || 0) +
+        mensajesGrupoAjenos +
+        mensajesTituloAjenos
+    );
+  }, [user?.id]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user?.id) {
       setNotificacionesCount(0);
       return;
     }
-    cargarNotificacionesSociales();
-    const timer = setInterval(cargarNotificacionesSociales, 15000);
+    void cargarNotificacionesSociales();
+    const timer = setInterval(() => {
+      void cargarNotificacionesSociales();
+    }, 15000);
     return () => clearInterval(timer);
-  }, [user?.id, vista, cargarNotificacionesSociales, user]);
+  }, [user?.id, vista, cargarNotificacionesSociales]);
 
   useEffect(() => {
-  if (!user?.id) return;
+    if (!user?.id) return;
 
-  const canalNotificaciones = supabase
-    .channel(`notificaciones-bell-${user.id}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'friendships',
-        filter: `addressee_id=eq.${user.id}`,
-      },
-      () => {
-        cargarNotificacionesSociales();
-      }
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'direct_messages',
-        filter: `receiver_id=eq.${user.id}`,
-      },
-      () => {
-        cargarNotificacionesSociales();
-      }
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'friend_group_invitations',
-        filter: `invitee_id=eq.${user.id}`,
-      },
-      () => {
-        cargarNotificacionesSociales();
-      }
-    )
-    .subscribe();
+    const onNuevoMensajeLocal = (e: Event) => {
+      const detalle = (e as CustomEvent<any>)?.detail;
+      const autor = detalle?.sender_id ?? detalle?.user_id;
+      if (autor && String(autor) === String(user.id)) return;
+      setNotificacionesCount((prev) => prev + 1);
+      mostrarToast('Nuevo mensaje en el chat');
+    };
 
-  return () => {
-    supabase.removeChannel(canalNotificaciones);
-  };
-}, [user?.id, cargarNotificacionesSociales]);
+    window.addEventListener('plotverse:nuevo-mensaje-grupo', onNuevoMensajeLocal);
+    window.addEventListener('plotverse:nuevo-mensaje-chat', onNuevoMensajeLocal);
+
+    const canalNotificaciones = supabase
+      .channel(`notificaciones-bell-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friendships',
+          filter: `addressee_id=eq.${user.id}`,
+        },
+        () => {
+          void cargarNotificacionesSociales();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'direct_messages',
+          filter: `receiver_id=eq.${user.id}`,
+        },
+        () => {
+          setNotificacionesCount((prev) => prev + 1);
+          mostrarToast('Nuevo mensaje privado');
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'friend_group_messages',
+        },
+        (payload) => {
+          const fila: any = payload?.new;
+          const autor = fila?.sender_id ?? fila?.user_id;
+          if (!fila || (autor && String(autor) === String(user.id))) return;
+          setNotificacionesCount((prev) => prev + 1);
+          mostrarToast('Nuevo mensaje en tu grupo');
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'title_friend_chat_messages',
+        },
+        (payload) => {
+          const fila: any = payload?.new;
+          const autor = fila?.sender_id ?? fila?.user_id;
+          if (!fila || (autor && String(autor) === String(user.id))) return;
+          setNotificacionesCount((prev) => prev + 1);
+          mostrarToast('Nuevo mensaje en el chat del título');
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friend_group_invitations',
+          filter: `invitee_id=eq.${user.id}`,
+        },
+        () => {
+          void cargarNotificacionesSociales();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('plotverse:nuevo-mensaje-grupo', onNuevoMensajeLocal);
+      window.removeEventListener('plotverse:nuevo-mensaje-chat', onNuevoMensajeLocal);
+      void supabase.removeChannel(canalNotificaciones);
+    };
+  }, [user?.id, cargarNotificacionesSociales, mostrarToast]);
 
   async function cargarNotasSerie(tmdbId: number) {
     if (!user) return;
@@ -645,15 +736,15 @@ export default function Home() {
     const hoyISO = new Date().toISOString().slice(0, 10);
 
     const startedAtFinal =
-  extra?.started_at !== undefined
-    ? extra.started_at || null
-    : previo?.started_at ??
-      (status === 'watching' || status === 'completed' ? hoyISO : null);
+      extra?.started_at !== undefined
+        ? extra.started_at || null
+        : previo?.started_at ??
+          (status === 'watching' || status === 'completed' ? hoyISO : null);
 
-const finishedAtFinal =
-  extra?.finished_at !== undefined
-    ? extra.finished_at || null
-    : previo?.finished_at ?? (status === 'completed' ? hoyISO : null);
+    const finishedAtFinal =
+      extra?.finished_at !== undefined
+        ? extra.finished_at || null
+        : previo?.finished_at ?? (status === 'completed' ? hoyISO : null);
 
     const rewatchFinal =
       extra?.rewatch_count !== undefined
@@ -694,7 +785,7 @@ const finishedAtFinal =
     await supabase.from('profiles').upsert(
       {
         id: user.id,
-        username: username || user.email?.split('')[0] || 'usuario',
+        username: username || user.email?.split('@')[0] || 'usuario',
       },
       { onConflict: 'id', ignoreDuplicates: true }
     );
