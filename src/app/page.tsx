@@ -1363,26 +1363,28 @@ const finishedAtFinal =
             </button>
 
             <button
+              type="button"
               onClick={() => setVista('comunidad')}
-              className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+              className={`flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                 vista === 'comunidad'
                   ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                   : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
               }`}
             >
-              <Users className="h-3.5 w-3.5" />
+              <Users className="h-3.5 w-3.5 shrink-0" />
               Comunidad
             </button>
 
             <button
+              type="button"
               onClick={() => (user ? setVista('biblioteca') : setShowAuth(true))}
-              className={`flex items-center gap-1.5 rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
+              className={`flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-4 py-2 text-xs font-bold transition active:scale-[0.98] ${
                 vista === 'biblioteca'
                   ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                   : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white'
               }`}
             >
-              <Bookmark className="h-3.5 w-3.5" />
+              <Bookmark className="h-3.5 w-3.5 shrink-0" />
               Mi Biblioteca ({cargandoUsuario ? '...' : totalBiblioteca})
             </button>
 
