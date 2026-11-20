@@ -694,7 +694,7 @@ const finishedAtFinal =
     await supabase.from('profiles').upsert(
       {
         id: user.id,
-        username: username || user.email?.split('@')[0] || 'usuario',
+        username: username || user.email?.split('')[0] || 'usuario',
       },
       { onConflict: 'id', ignoreDuplicates: true }
     );
@@ -1318,7 +1318,7 @@ const finishedAtFinal =
                         : 'border-indigo-400/50 bg-indigo-600/25 text-indigo-200 hover:bg-indigo-600 hover:text-white'
                     }`}
                   >
-                    @{username || 'usuario'}
+                    {username || 'usuario'}
                   </button>
                   <button
                     onClick={() => supabase.auth.signOut()}
@@ -1397,7 +1397,7 @@ const finishedAtFinal =
                   }`}
                 >
                   <User className="h-3.5 w-3.5" />
-                  @{username || 'perfil'}
+                  {username || 'perfil'}
                 </button>
 
                 <button
@@ -1501,7 +1501,7 @@ const finishedAtFinal =
                           Bienvenido a PlotVerse
                         </p>
                         <h1 className="text-lg font-extrabold text-white sm:text-xl">
-                          Hola, @{username || user.user_metadata?.username || user.email?.split('@')[0]}
+                          Hola, {username || user.user_metadata?.username || user.email?.split('@')[0]}
                         </h1>
                       </div>
 

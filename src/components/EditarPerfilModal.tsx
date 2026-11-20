@@ -148,7 +148,7 @@ export default function EditarPerfilModal({
 
           <div>
             <label className="mb-1 block text-xs font-semibold text-slate-300">
-              Nick (@usuario)
+              Nick (usuario)
             </label>
             <input
               type="text"

@@ -876,7 +876,7 @@ export default function UserProfileModal({
 
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-xl font-bold text-white">@{perfil?.username || 'usuario'}</h2>
+                <h2 className="text-xl font-bold text-white">{perfil?.username || 'usuario'}</h2>
                 {perfilEstaConectado && (
                   <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
