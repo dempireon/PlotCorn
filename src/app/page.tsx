@@ -26,7 +26,7 @@ import {
   User, LogOut, Bookmark, Users, Plus, Trash2, ChevronDown,
   Clapperboard, Flame, SlidersHorizontal, RotateCcw, FolderPlus,
   Calendar, Folder, Library, Globe, Lock, Compass, ArrowUpDown,
-  Bell, Dices
+  Bell, Dices, LogIn, BookmarkCheck
 } from 'lucide-react';
 
 type EstadoMedia = 'watching' | 'completed' | 'watchlist' | 'dropped';
@@ -703,6 +703,7 @@ export default function Home() {
 
   const todosGuardados = Object.values(miLista);
   const totalBiblioteca = todosGuardados.length;
+  const viendoAhoraLista = todosGuardados.filter((i) => i.status === 'watching');
 
   const cumpleFiltroTipo = (mediaType: MediaType) => {
     if (filtroTipo === 'tv' || filtroTipo === 'reality') return mediaType === 'tv';
@@ -1399,6 +1400,134 @@ export default function Home() {
           />
         ) : (
           <>
+            {/* Portada adaptable: Visitante sin sesión vs Usuario con sesión */}
+            {vista === 'explorar' && !query.trim() && (
+              <section className="mb-6 overflow-hidden rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950/35 p-4 shadow-xl sm:p-6">
+                {!user ? (
+                  <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+                    <div className="max-w-2xl space-y-2">
+                      <div className="inline-flex items-center gap-2 rounded-full border border-indigo-500/30 bg-indigo-500/10 px-3 py-1 text-[11px] font-bold text-indigo-300">
+                        <Sparkles className="h-3.5 w-3.5" />
+                        <span>PlotVerse · Series, películas, documentales y realities</span>
+                      </div>
+                      <h1 className="text-xl font-extrabold tracking-tight text-white sm:text-2xl">
+                        Explora libremente y comenta en vivo con quienes ven lo mismo
+                      </h1>
+                      <p className="text-xs leading-relaxed text-slate-300 sm:text-sm">
+                        Filtra por plataforma o género, decide qué empezar con la ruleta y crea tu cuenta cuando quieras guardar progreso, fechas y revisionados o entrar al chat en vivo del título.
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 flex-wrap items-center gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setMostrarRuleta(true)}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-slate-700 bg-slate-900/90 px-4 py-2.5 text-xs font-bold text-slate-100 transition hover:border-indigo-500 hover:text-white"
+                      >
+                        <Dices className="h-4 w-4 text-indigo-400" />
+                        <span>¿Qué veo hoy?</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowAuth(true)}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition hover:bg-indigo-500"
+                      >
+                        <LogIn className="h-4 w-4" />
+                        <span>Crear cuenta / Entrar</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-indigo-300">
+                          Bienvenido a PlotVerse
+                        </p>
+                        <h1 className="text-lg font-extrabold text-white sm:text-xl">
+                          Hola, @{username || user.user_metadata?.username || user.email?.split('@')[0]}
+                        </h1>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setMostrarRuleta(true)}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2 text-xs font-bold text-slate-200 transition hover:border-indigo-500 hover:text-white"
+                        >
+                          <Dices className="h-3.5 w-3.5 text-indigo-400" />
+                          <span>¿Qué veo hoy?</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setVista('biblioteca')}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-bold text-white transition hover:bg-indigo-500"
+                        >
+                          <BookmarkCheck className="h-3.5 w-3.5" />
+                          <span>Mi Biblioteca ({totalBiblioteca})</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {viendoAhoraLista.length === 0 ? (
+                      <div className="rounded-2xl border border-slate-800/90 bg-slate-950/70 px-4 py-3 text-xs text-slate-400">
+                        No tienes ningún título marcado como <strong className="text-indigo-300">Viendo</strong> ahora mismo. Abre cualquier ficha o explora abajo para empezar y entrar a su chat en vivo.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold uppercase tracking-wider text-slate-400">
+                            Viendo ahora ({viendoAhoraLista.length})
+                          </span>
+                          <span className="text-slate-500">Toca un título para abrir ficha o chat</span>
+                        </div>
+
+                        <div className="flex gap-2.5 overflow-x-auto pb-1">
+                          {viendoAhoraLista.slice(0, 8).map((item) => (
+                            <button
+                              key={`${item.media_type}-${item.tmdb_id}`}
+                              type="button"
+                              onClick={() =>
+                                setItemActivo({
+                                  id: item.tmdb_id,
+                                  media_type: item.media_type || 'tv',
+                                  name: item.title || 'Título guardado',
+                                  overview: '',
+                                  poster_path: item.poster_path || null,
+                                  backdrop_path: null,
+                                  first_air_date: '',
+                                  vote_average: item.rating || 0,
+                                })
+                              }
+                              className="flex shrink-0 items-center gap-2.5 rounded-2xl border border-slate-800 bg-slate-950/85 p-2 text-left transition hover:border-indigo-500/60"
+                            >
+                              <img
+                                src={getPosterUrl(item.poster_path || null)}
+                                alt={item.title || 'Título guardado'}
+                                className="h-12 w-8 rounded-lg object-cover"
+                              />
+                              <div className="min-w-0 max-w-[150px]">
+                                <p className="truncate text-xs font-bold text-white">
+                                  {item.title || 'Título guardado'}
+                                </p>
+                                <p className="text-[10px] font-semibold text-indigo-300">
+                                  {item.media_type === 'movie'
+                                    ? 'En progreso'
+                                    : `T${item.current_season || 1} · E${item.current_episode || 1}`}
+                                </p>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            )}
+
             <div className="mb-5 flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
               <div className="flex items-center gap-2.5">
                 <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-400">

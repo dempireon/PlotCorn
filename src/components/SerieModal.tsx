@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
+import ChatSalaTituloModal from '@/components/ChatSalaTituloModal';
 import {
   X, Star, Eye, Check, Clock, PauseCircle, Play, Tv, Film,
   Calendar, Sparkles, Users, MessageSquare, Send, Share2, Trash2
@@ -40,6 +41,7 @@ interface SerieModalProps {
   ) => void;
   onUpdateSeguimiento?: (extra: SeguimientoExtraModal) => void;
   onEliminarEstado?: () => void;
+  onAbrirChatSala?: (media: MediaTMDB) => void;
   onClose: () => void;
   onRequireAuth: () => void;
 }
@@ -51,6 +53,7 @@ export default function SerieModal({
   onUpdateEstado,
   onUpdateSeguimiento,
   onEliminarEstado,
+  onAbrirChatSala,
   onClose,
   onRequireAuth,
 }: SerieModalProps) {
@@ -59,6 +62,7 @@ export default function SerieModal({
   const [plataformasES, setPlataformasES] = useState<any[]>([]);
   const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [mostrarTrailer, setMostrarTrailer] = useState(false);
+  const [mostrarChatSala, setMostrarChatSala] = useState(false);
   const [similares, setSimilares] = useState<MediaTMDB[]>([]);
   const [copiadoEnlace, setCopiadoEnlace] = useState(false);
 
@@ -99,6 +103,7 @@ export default function SerieModal({
   useEffect(() => {
     setMediaActiva(serie);
     setMostrarTrailer(false);
+    setMostrarChatSala(false);
   }, [serie]);
 
   useEffect(() => {
@@ -252,7 +257,7 @@ export default function SerieModal({
           url,
         });
         return;
-      } catch {}
+      } catch { }
     }
     await navigator.clipboard.writeText(url);
     setCopiadoEnlace(true);
@@ -282,8 +287,8 @@ export default function SerieModal({
     const promedio =
       notasValidas.length > 0
         ? Number(
-            (notasValidas.reduce((acc, n) => acc + n, 0) / notasValidas.length).toFixed(1)
-          )
+          (notasValidas.reduce((acc, n) => acc + n, 0) / notasValidas.length).toFixed(1)
+        )
         : 0;
 
     setVistosComunidadCount(usuariosVistos.size);
@@ -593,6 +598,10 @@ export default function SerieModal({
   }
 
   const titulo = detalle?.title || detalle?.name || mediaActiva.name;
+  const mediaParaChat: MediaTMDB = {
+    ...mediaActiva,
+    name: titulo,
+  };
   const fechaLanzamiento = detalle?.release_date || detalle?.first_air_date || '';
   const anio = fechaLanzamiento ? fechaLanzamiento.slice(0, 4) : '';
   const duracion = esPeli
@@ -646,11 +655,10 @@ export default function SerieModal({
             <div className="min-w-0 flex-1 space-y-2 sm:space-y-2.5">
               <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase sm:px-2.5 sm:text-[11px] ${
-                    esPeli
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase sm:px-2.5 sm:text-[11px] ${esPeli
                       ? 'bg-rose-500/20 text-rose-300'
                       : 'bg-indigo-500/20 text-indigo-300'
-                  }`}
+                    }`}
                 >
                   {esPeli ? <Film className="h-2.5 w-2.5 sm:h-3 sm:w-3" /> : <Tv className="h-2.5 w-2.5 sm:h-3 sm:w-3" />}
                   {esPeli ? 'Película' : 'Serie'}
@@ -699,11 +707,10 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('watching')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
-                    estadoActual?.status === 'watching'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'watching'
                       ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-indigo-500'
-                  }`}
+                    }`}
                 >
                   <Eye className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Viendo
@@ -712,11 +719,10 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('completed')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
-                    estadoActual?.status === 'completed'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'completed'
                       ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-emerald-500'
-                  }`}
+                    }`}
                 >
                   <Check className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   {esPeli ? 'Vista' : 'Terminada'}
@@ -725,11 +731,10 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('watchlist')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
-                    estadoActual?.status === 'watchlist'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'watchlist'
                       ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-amber-500'
-                  }`}
+                    }`}
                 >
                   <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Pendiente
@@ -738,11 +743,10 @@ export default function SerieModal({
                 <button
                   type="button"
                   onClick={() => handleToggleEstado('dropped')}
-                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${
-                    estadoActual?.status === 'dropped'
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs ${estadoActual?.status === 'dropped'
                       ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30'
                       : 'border border-slate-700 bg-slate-900/90 text-slate-200 hover:border-rose-500'
-                  }`}
+                    }`}
                 >
                   <PauseCircle className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
                   Abandonada
@@ -760,11 +764,10 @@ export default function SerieModal({
                         title={notaActual === num ? 'Quitar puntuación' : `Puntuar con ${num}`}
                       >
                         <Star
-                          className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${
-                            notaActual >= num
+                          className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${notaActual >= num
                               ? 'fill-amber-400 text-amber-400'
                               : ''
-                          }`}
+                            }`}
                         />
                       </button>
                     );
@@ -781,6 +784,21 @@ export default function SerieModal({
                     {mostrarTrailer ? 'Ocultar' : 'Tráiler'}
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onAbrirChatSala) {
+                      onAbrirChatSala(mediaParaChat);
+                    } else {
+                      setMostrarChatSala(true);
+                    }
+                  }}
+                  className="flex items-center gap-1 rounded-lg border border-indigo-500/50 bg-indigo-600/20 px-2.5 py-1 text-[11px] font-bold text-indigo-200 transition hover:bg-indigo-600 hover:text-white sm:gap-1.5 sm:rounded-xl sm:px-3 sm:py-1.5 sm:text-xs"
+                >
+                  <MessageSquare className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                  Chat en vivo
+                </button>
 
                 <button
                   type="button"
@@ -825,7 +843,6 @@ export default function SerieModal({
                 </div>
               )}
 
-              {/* Seguimiento personal: Fecha inicio, Fecha fin y Veces vista */}
               <section className="rounded-2xl border border-slate-800/80 bg-slate-900/45 p-4">
                 <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-slate-400">
                   Tu seguimiento personal
@@ -977,19 +994,18 @@ export default function SerieModal({
                           Tú: ★ {miNota} · Media: ★ {mediaComunidad}
                         </p>
                         <p
-                          className={`text-[11px] font-bold ${
-                            diff > 0
+                          className={`text-[11px] font-bold ${diff > 0
                               ? 'text-emerald-400'
                               : diff < 0
-                              ? 'text-rose-400'
-                              : 'text-slate-300'
-                          }`}
+                                ? 'text-rose-400'
+                                : 'text-slate-300'
+                            }`}
                         >
                           {diff > 0
                             ? `+${diff} ★ por encima de la media`
                             : diff < 0
-                            ? `${diff} ★ por debajo de la media`
-                            : 'Igual que la media de la comunidad'}
+                              ? `${diff} ★ por debajo de la media`
+                              : 'Igual que la media de la comunidad'}
                         </p>
                       </div>
                     ) : (
@@ -1095,11 +1111,10 @@ export default function SerieModal({
                           key={temp.season_number}
                           type="button"
                           onClick={() => setTemporadaSeleccionada(temp.season_number)}
-                          className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
-                            temporadaSeleccionada === temp.season_number
+                          className={`rounded-xl px-3 py-1 text-xs font-bold transition ${temporadaSeleccionada === temp.season_number
                               ? 'bg-indigo-600 text-white'
                               : 'bg-slate-950 text-slate-400 hover:text-white'
-                          }`}
+                            }`}
                         >
                           Temp {temp.season_number}
                         </button>
@@ -1116,11 +1131,10 @@ export default function SerieModal({
                       return (
                         <div
                           key={ep.id}
-                          className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition ${
-                            visto
+                          className={`flex items-center justify-between gap-3 rounded-xl border p-3 transition ${visto
                               ? 'border-emerald-500/30 bg-emerald-500/5'
                               : 'border-slate-800 bg-slate-950/80'
-                          }`}
+                            }`}
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <button
@@ -1128,11 +1142,10 @@ export default function SerieModal({
                               onClick={() =>
                                 toggleEpisodioVisto(temporadaSeleccionada, ep.episode_number)
                               }
-                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${
-                                visto
+                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition ${visto
                                   ? 'border-emerald-500 bg-emerald-600 text-white'
                                   : 'border-slate-700 bg-slate-900 text-transparent hover:border-indigo-500'
-                              }`}
+                                }`}
                             >
                               <Check className="h-4 w-4" />
                             </button>
@@ -1166,11 +1179,10 @@ export default function SerieModal({
                                   title={nuevaNotaEp === 0 ? 'Quitar puntuación' : `Puntuar con ${estrella}`}
                                 >
                                   <Star
-                                    className={`h-3 w-3 ${
-                                      notaEpActual >= estrella
+                                    className={`h-3 w-3 ${notaEpActual >= estrella
                                         ? 'fill-amber-400 text-amber-400'
                                         : ''
-                                    }`}
+                                      }`}
                                   />
                                 </button>
                               );
@@ -1249,6 +1261,17 @@ export default function SerieModal({
           )}
         </div>
       </div>
+
+      {mostrarChatSala && (
+        <ChatSalaTituloModal
+          media={mediaParaChat}
+          user={user}
+          estadoUsuario={estadoActual}
+          onMarcarViendo={(item) => handleToggleEstado('watching')}
+          onClose={() => setMostrarChatSala(false)}
+          onRequireAuth={onRequireAuth}
+        />
+      )}
     </div>
   );
 }
