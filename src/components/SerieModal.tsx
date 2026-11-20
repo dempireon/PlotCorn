@@ -25,6 +25,8 @@ interface RegistroFechaHistorial {
   started_date?: string | null;
   finished_date?: string | null;
   watched_date: string;
+  watch_count?: number | null;
+  updated_at?: string | null;
 }
 
 interface SerieModalProps {
@@ -116,6 +118,7 @@ export default function SerieModal({
   const [fechaFinInput, setFechaFinInput] = useState<string>('');
   const [historialFechas, setHistorialFechas] = useState<RegistroFechaHistorial[]>([]);
   const [guardandoFechas, setGuardandoFechas] = useState<boolean>(false);
+  const [errorFechas, setErrorFechas] = useState<string | null>(null);
 
   const esPeli = mediaActiva.media_type === 'movie';
 
@@ -125,6 +128,7 @@ export default function SerieModal({
     setMostrarChatSala(false);
     setFechaInicioInput('');
     setFechaFinInput('');
+    setErrorFechas(null);
   }, [serie]);
 
   useEffect(() => {
@@ -141,16 +145,21 @@ export default function SerieModal({
     const tipo = mediaActiva.media_type || 'tv';
 
     async function cargarFechasTitulo() {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('watch_history_dates')
-        .select('id, started_date, finished_date, watched_date, created_at')
+        .select('id, started_date, finished_date, watched_date, watch_count, updated_at')
         .eq('user_id', user.id)
         .eq('tmdb_id', mediaActiva.id)
         .eq('media_type', tipo)
-        .order('created_at', { ascending: false });
+        .order('updated_at', { ascending: false });
 
-      if (activo && data) {
-        setHistorialFechas(data);
+      if (activo) {
+        if (error) {
+          console.error('Error cargando historial de fechas:', error);
+          setHistorialFechas([]);
+        } else if (data) {
+          setHistorialFechas(data);
+        }
       }
     }
 
@@ -216,33 +225,37 @@ export default function SerieModal({
 
     const tipo = mediaActiva.media_type || 'tv';
     const hoy = new Date().toISOString().slice(0, 10);
-
-    const yaRegistradaHoy = historialFechas.some(
-      (reg) => reg.watched_date === hoy && !reg.started_date && !reg.finished_date
-    );
-    if (yaRegistradaHoy) return;
+    const registroExistente = historialFechas[0];
+    const cuentaPrevia = Number(registroExistente?.watch_count || 0);
+    const siguienteCuenta = cuentaPrevia + 1;
+    const nowIso = new Date().toISOString();
 
     const { data, error } = await supabase
       .from('watch_history_dates')
-      .insert({
-        user_id: user.id,
-        tmdb_id: mediaActiva.id,
-        media_type: tipo,
-        started_date: null,
-        finished_date: hoy,
-        watched_date: hoy,
-      })
-      .select('id, started_date, finished_date, watched_date')
+      .upsert(
+        {
+          user_id: user.id,
+          tmdb_id: mediaActiva.id,
+          media_type: tipo,
+          started_date: registroExistente?.started_date || estadoActual?.started_at || null,
+          finished_date: hoy,
+          watched_date: hoy,
+          watch_count: siguienteCuenta,
+          updated_at: nowIso,
+        },
+        { onConflict: 'user_id,tmdb_id,media_type' }
+      )
+      .select('id, started_date, finished_date, watched_date, watch_count, updated_at')
       .single();
 
     if (!error && data) {
-      const nuevaLista = [data, ...historialFechas];
-      setHistorialFechas(nuevaLista);
+      const totalVisto = Number(data.watch_count || siguienteCuenta);
+      setHistorialFechas([data]);
 
       const extraActualizado: SeguimientoExtraModal = {
-        started_at: estadoActual?.started_at || null,
-        finished_at: hoy,
-        rewatch_count: nuevaLista.length,
+        started_at: data.started_date || estadoActual?.started_at || null,
+        finished_at: data.finished_date || hoy,
+        rewatch_count: totalVisto,
       };
 
       if (onUpdateSeguimiento) {
@@ -310,48 +323,71 @@ export default function SerieModal({
     if (!fechaInicioInput && !fechaFinInput) return;
     if (guardandoFechas) return;
 
+    setErrorFechas(null);
     setGuardandoFechas(true);
     const tipo = mediaActiva.media_type || 'tv';
+    const registroPrevio = historialFechas[0];
+
+    const fechaInicioFinal =
+      fechaInicioInput || registroPrevio?.started_date || estadoActual?.started_at || null;
+    const fechaFinFinal =
+      fechaFinInput || registroPrevio?.finished_date || estadoActual?.finished_at || null;
     const fechaRef =
-      fechaFinInput || fechaInicioInput || new Date().toISOString().slice(0, 10);
+      fechaFinFinal || fechaInicioFinal || new Date().toISOString().slice(0, 10);
+
+    const cuentaPrevia = Number(registroPrevio?.watch_count || 0);
+    const siguienteCuenta = cuentaPrevia + 1;
 
     const { data, error } = await supabase
       .from('watch_history_dates')
-      .insert({
-        user_id: user.id,
-        tmdb_id: mediaActiva.id,
-        media_type: tipo,
-        started_date: fechaInicioInput || null,
-        finished_date: fechaFinInput || null,
-        watched_date: fechaRef,
-      })
-      .select('id, started_date, finished_date, watched_date')
+      .upsert(
+        {
+          user_id: user.id,
+          tmdb_id: mediaActiva.id,
+          media_type: tipo,
+          started_date: fechaInicioFinal,
+          finished_date: fechaFinFinal,
+          watched_date: fechaRef,
+          watch_count: siguienteCuenta,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id,tmdb_id,media_type' }
+      )
+      .select('id, started_date, finished_date, watched_date, watch_count, updated_at')
       .single();
 
-    if (!error && data) {
-      const nuevaLista = [data, ...historialFechas];
-      setHistorialFechas(nuevaLista);
+    if (error || !data) {
+      console.error('Error guardando fecha:', error);
+      setErrorFechas(
+        error?.message ||
+          'No se pudo guardar la fecha. Verifica la tabla watch_history_dates y las políticas RLS.'
+      );
+      setGuardandoFechas(false);
+      return;
+    }
 
-      const extraActualizado: SeguimientoExtraModal = {
-        started_at: fechaInicioInput || estadoActual?.started_at || null,
-        finished_at: fechaFinInput || estadoActual?.finished_at || null,
-        rewatch_count: nuevaLista.length,
-      };
+    const totalVisto = Number(data.watch_count || siguienteCuenta);
+    setHistorialFechas([data]);
 
-      setFechaInicioInput('');
-      setFechaFinInput('');
+    const extraActualizado: SeguimientoExtraModal = {
+      started_at: data.started_date || null,
+      finished_at: data.finished_date || null,
+      rewatch_count: totalVisto,
+    };
 
-      if (onUpdateSeguimiento) {
-        onUpdateSeguimiento(extraActualizado);
-      } else {
-        onUpdateEstado(
-          estadoActual?.status || 'completed',
-          estadoActual?.rating || 0,
-          estadoActual?.current_season || 1,
-          estadoActual?.current_episode || 1,
-          extraActualizado
-        );
-      }
+    setFechaInicioInput('');
+    setFechaFinInput('');
+
+    if (onUpdateSeguimiento) {
+      onUpdateSeguimiento(extraActualizado);
+    } else {
+      onUpdateEstado(
+        estadoActual?.status || 'completed',
+        estadoActual?.rating || 0,
+        estadoActual?.current_season || 1,
+        estadoActual?.current_episode || 1,
+        extraActualizado
+      );
     }
 
     setGuardandoFechas(false);
@@ -359,17 +395,28 @@ export default function SerieModal({
 
   async function handleBorrarFechaHistorial(idFecha: string) {
     if (!user) return;
-    const nuevaLista = historialFechas.filter((f) => f.id !== idFecha);
-    setHistorialFechas(nuevaLista);
+    setErrorFechas(null);
 
-    await supabase
+    const { error } = await supabase
       .from('watch_history_dates')
       .delete()
       .eq('id', idFecha)
       .eq('user_id', user.id);
 
+    if (error) {
+      console.error('Error borrando fecha:', error);
+      setErrorFechas(error.message || 'No se pudo eliminar la fecha.');
+      return;
+    }
+
+    setHistorialFechas((prev) => prev.filter((f) => f.id !== idFecha));
+
     if (onUpdateSeguimiento) {
-      onUpdateSeguimiento({ rewatch_count: nuevaLista.length });
+      onUpdateSeguimiento({
+        started_at: null,
+        finished_at: null,
+        rewatch_count: 0,
+      });
     }
   }
 
@@ -743,6 +790,11 @@ export default function SerieModal({
   const hayComparativa = miNota > 0 && mediaComunidad > 0;
   const diff = hayComparativa ? Number((miNota - mediaComunidad).toFixed(1)) : 0;
 
+  const totalVecesVistoTitulo = historialFechas.reduce(
+    (acc, reg) => acc + Number(reg.watch_count || 1),
+    0
+  );
+
   return (
     <div
       onClick={onClose}
@@ -981,8 +1033,8 @@ export default function SerieModal({
                     Registro de fechas vistas
                   </h3>
                   <span className="rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-bold text-indigo-300">
-                    {historialFechas.length}{' '}
-                    {historialFechas.length === 1 ? 'vez vista' : 'veces vista'}
+                    {totalVecesVistoTitulo}{' '}
+                    {totalVecesVistoTitulo === 1 ? 'vez vista' : 'veces vista'}
                   </span>
                 </div>
 
@@ -1023,6 +1075,10 @@ export default function SerieModal({
                   </button>
                 </form>
 
+                {errorFechas && (
+                  <p className="text-[11px] font-semibold text-rose-400">{errorFechas}</p>
+                )}
+
                 {historialFechas.length > 0 && (
                   <div className="space-y-1.5 pt-1">
                     <p className="text-[11px] font-semibold text-slate-400">
@@ -1033,6 +1089,7 @@ export default function SerieModal({
                         const ini = formatearFechaES(reg.started_date);
                         const fin = formatearFechaES(reg.finished_date);
                         const unica = formatearFechaES(reg.watched_date);
+                        const veces = Number(reg.watch_count || 1);
                         const etiqueta =
                           ini && fin
                             ? `${ini} → ${fin}`
@@ -1047,7 +1104,9 @@ export default function SerieModal({
                             key={reg.id}
                             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950 px-2.5 py-1 text-[11px] text-slate-200"
                           >
-                            <span>{etiqueta}</span>
+                            <span>
+                              {etiqueta} · <strong className="text-indigo-300">{veces}×</strong>
+                            </span>
                             <button
                               type="button"
                               onClick={() => handleBorrarFechaHistorial(reg.id)}

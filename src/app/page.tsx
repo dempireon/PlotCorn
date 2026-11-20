@@ -340,6 +340,54 @@ export default function Home() {
     return () => clearInterval(timer);
   }, [user?.id, vista, cargarNotificacionesSociales, user]);
 
+  useEffect(() => {
+  if (!user?.id) return;
+
+  const canalNotificaciones = supabase
+    .channel(`notificaciones-bell-${user.id}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'friendships',
+        filter: `addressee_id=eq.${user.id}`,
+      },
+      () => {
+        cargarNotificacionesSociales();
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'direct_messages',
+        filter: `receiver_id=eq.${user.id}`,
+      },
+      () => {
+        cargarNotificacionesSociales();
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'friend_group_invitations',
+        filter: `invitee_id=eq.${user.id}`,
+      },
+      () => {
+        cargarNotificacionesSociales();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(canalNotificaciones);
+  };
+}, [user?.id, cargarNotificacionesSociales]);
+
   async function cargarNotasSerie(tmdbId: number) {
     if (!user) return;
     const { data } = await supabase
@@ -597,15 +645,15 @@ export default function Home() {
     const hoyISO = new Date().toISOString().slice(0, 10);
 
     const startedAtFinal =
-      extra?.started_at !== undefined
-        ? extra.started_at
-        : previo?.started_at ??
-          (status === 'watching' || status === 'completed' ? hoyISO : null);
+  extra?.started_at !== undefined
+    ? extra.started_at || null
+    : previo?.started_at ??
+      (status === 'watching' || status === 'completed' ? hoyISO : null);
 
-    const finishedAtFinal =
-      extra?.finished_at !== undefined
-        ? extra.finished_at
-        : previo?.finished_at ?? (status === 'completed' ? hoyISO : null);
+const finishedAtFinal =
+  extra?.finished_at !== undefined
+    ? extra.finished_at || null
+    : previo?.finished_at ?? (status === 'completed' ? hoyISO : null);
 
     const rewatchFinal =
       extra?.rewatch_count !== undefined

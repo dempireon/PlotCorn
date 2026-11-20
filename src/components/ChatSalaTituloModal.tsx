@@ -399,6 +399,11 @@ export default function ChatSalaTituloModal({
 
     canal.subscribe(async (status) => {
       if (status === 'SUBSCRIBED' && activo) {
+        if (modoSala === 'general') {
+          await cargarHistorialGeneral();
+        } else {
+          await cargarHistorialPrivado();
+        }
         await canal.track({
           user_id: user?.id || null,
           username:

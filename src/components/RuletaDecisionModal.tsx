@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import { getPosterUrl, MediaTMDB, MediaType, discoverMediaAvanzado } from '@/lib/tmdb';
-import { Dices, X, Eye, Sparkles, Tv, Film, RotateCw, Globe, Star } from 'lucide-react';
+import { Dices, X, Eye, Sparkles, Tv, Film, RotateCw, Globe, Star, Clapperboard, Flame } from 'lucide-react';
+
+const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
 
 interface RuletaDecisionModalProps {
   itemsBiblioteca: any[];
@@ -11,6 +13,8 @@ interface RuletaDecisionModalProps {
   onMarcarViendo: (media: MediaTMDB) => void;
 }
 
+type FiltroFormatoRuleta = 'all' | 'tv' | 'movie' | 'documentary' | 'reality';
+
 export default function RuletaDecisionModal({
   itemsBiblioteca,
   onClose,
@@ -18,17 +22,92 @@ export default function RuletaDecisionModal({
   onMarcarViendo,
 }: RuletaDecisionModalProps) {
   const [filtroOrigen, setFiltroOrigen] = useState<'catalogo' | 'watchlist' | 'all'>('catalogo');
-  const [filtroFormato, setFiltroFormato] = useState<'all' | 'tv' | 'movie'>('all');
+  const [filtroFormato, setFiltroFormato] = useState<FiltroFormatoRuleta>('all');
   const [girando, setGirando] = useState(false);
   const [candidatoActual, setCandidatoActual] = useState<any | null>(null);
   const [ganadorFinal, setGanadorFinal] = useState<any | null>(null);
   const [poolCatalogo, setPoolCatalogo] = useState<any[]>([]);
 
+  function coincideConFormato(item: any, formato: FiltroFormatoRuleta): boolean {
+    if (formato === 'all') return true;
+    const tipo = item.media_type || 'tv';
+    const cat = (item.category || item.categoria || '').toString().toLowerCase();
+    const generos: number[] = Array.isArray(item.genre_ids)
+      ? item.genre_ids.map((g: any) => Number(g))
+      : [];
+
+    if (formato === 'movie') return tipo === 'movie';
+    if (formato === 'tv') {
+      return tipo === 'tv' && cat !== 'documentary' && cat !== 'reality';
+    }
+    if (formato === 'documentary') {
+      return cat === 'documentary' || generos.includes(99);
+    }
+    if (formato === 'reality') {
+      return cat === 'reality' || generos.includes(10764) || generos.includes(10767);
+    }
+    return true;
+  }
+
   const candidatosLocales = itemsBiblioteca.filter((item) => {
     if (filtroOrigen === 'watchlist' && item.status !== 'watchlist') return false;
-    if (filtroFormato !== 'all' && item.media_type !== filtroFormato) return false;
-    return true;
+    return coincideConFormato(item, filtroFormato);
   });
+
+  async function obtenerCandidatosCatalogo(formato: FiltroFormatoRuleta) {
+    if (formato === 'documentary' || formato === 'reality') {
+      try {
+        const res = await discoverMediaAvanzado({
+          categoria: formato as any,
+          plataformaId: '',
+          generoId: '',
+        });
+        if (Array.isArray(res) && res.length > 0) {
+          return res.map((m) => ({
+            tmdb_id: m.id,
+            media_type: m.media_type,
+            title: m.name,
+            poster_path: m.poster_path,
+            rating: m.vote_average,
+          }));
+        }
+      } catch {
+        // Fallback directo a TMDB discover por género si el helper no contempla la categoría
+      }
+
+      if (TMDB_API_KEY) {
+        const genreId = formato === 'documentary' ? '99' : '10764';
+        const url =
+          formato === 'documentary'
+            ? `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}&language=es-ES&with_genres=${genreId}&sort_by=popularity.desc`
+            : `https://api.themoviedb.org/3/discover/tv?api_key=${TMDB_API_KEY}&language=es-ES&with_genres=${genreId}&sort_by=popularity.desc`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        return (data.results || []).map((r: any) => ({
+          tmdb_id: r.id,
+          media_type: 'tv' as MediaType,
+          title: r.name || r.title || 'Título',
+          poster_path: r.poster_path || null,
+          rating: r.vote_average || 0,
+        }));
+      }
+      return [];
+    }
+
+    const res = await discoverMediaAvanzado({
+      categoria: formato,
+      plataformaId: '',
+      generoId: '',
+    });
+
+    return (res || []).map((m) => ({
+      tmdb_id: m.id,
+      media_type: m.media_type,
+      title: m.name,
+      poster_path: m.poster_path,
+      rating: m.vote_average,
+    }));
+  }
 
   async function girarRuleta() {
     if (girando) return;
@@ -39,18 +118,7 @@ export default function RuletaDecisionModal({
 
     if (filtroOrigen === 'catalogo') {
       try {
-        const res = await discoverMediaAvanzado({
-          categoria: filtroFormato === 'all' ? 'all' : filtroFormato,
-          plataformaId: '',
-          generoId: '',
-        });
-        listaSorteo = res.map((m) => ({
-          tmdb_id: m.id,
-          media_type: m.media_type,
-          title: m.name,
-          poster_path: m.poster_path,
-          rating: m.vote_average,
-        }));
+        listaSorteo = await obtenerCandidatosCatalogo(filtroFormato);
         setPoolCatalogo(listaSorteo);
       } catch (e) {
         console.error(e);
@@ -124,7 +192,7 @@ export default function RuletaDecisionModal({
           </button>
         </div>
 
-        {/* Filtros de origen (Todo primero) y formato */}
+        {/* Filtros de origen y formato (incluyendo documentales y realities) */}
         <div className="mb-5 space-y-2.5">
           <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5">
             <button
@@ -171,11 +239,14 @@ export default function RuletaDecisionModal({
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5">
+          <div className="flex flex-wrap gap-1.5 rounded-2xl border border-slate-800 bg-slate-900/90 p-1.5">
             <button
               type="button"
-              onClick={() => setFiltroFormato('all')}
-              className={`rounded-xl py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+              onClick={() => {
+                setFiltroFormato('all');
+                setGanadorFinal(null);
+              }}
+              className={`flex-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
                 filtroFormato === 'all'
                   ? 'border border-slate-600 bg-slate-800 text-white shadow-sm'
                   : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
@@ -185,8 +256,11 @@ export default function RuletaDecisionModal({
             </button>
             <button
               type="button"
-              onClick={() => setFiltroFormato('tv')}
-              className={`flex items-center justify-center gap-1 rounded-xl py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+              onClick={() => {
+                setFiltroFormato('tv');
+                setGanadorFinal(null);
+              }}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
                 filtroFormato === 'tv'
                   ? 'border border-indigo-400/50 bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
@@ -196,14 +270,45 @@ export default function RuletaDecisionModal({
             </button>
             <button
               type="button"
-              onClick={() => setFiltroFormato('movie')}
-              className={`flex items-center justify-center gap-1 rounded-xl py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+              onClick={() => {
+                setFiltroFormato('movie');
+                setGanadorFinal(null);
+              }}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
                 filtroFormato === 'movie'
                   ? 'border border-rose-400/50 bg-rose-600 text-white shadow-sm'
                   : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
               }`}
             >
               <Film className="h-3.5 w-3.5" /> Pelis
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFiltroFormato('documentary');
+                setGanadorFinal(null);
+              }}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                filtroFormato === 'documentary'
+                  ? 'border border-amber-400/50 bg-amber-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <Clapperboard className="h-3.5 w-3.5" /> Docs
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFiltroFormato('reality');
+                setGanadorFinal(null);
+              }}
+              className={`flex flex-1 items-center justify-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold transition active:scale-[0.98] ${
+                filtroFormato === 'reality'
+                  ? 'border border-fuchsia-400/50 bg-fuchsia-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <Flame className="h-3.5 w-3.5" /> Realities
             </button>
           </div>
         </div>
@@ -222,7 +327,9 @@ export default function RuletaDecisionModal({
               </div>
               <p className="text-xs text-slate-300">
                 {filtroOrigen === 'catalogo' ? (
-                  <>Sorteo abierto entre las mejores series y películas del catálogo.</>
+                  <>
+                    Sorteo abierto entre series, películas, documentales y realities del catálogo.
+                  </>
                 ) : (
                   <>
                     Tienes <strong className="text-white">{candidatosLocales.length}</strong> opciones listas para sortear.

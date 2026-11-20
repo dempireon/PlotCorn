@@ -6,8 +6,11 @@ import { getPosterUrl } from '@/lib/tmdb';
 import { evaluarLenguaje } from '@/lib/filtroLenguaje';
 import {
   Users, UserPlus, Check, X, MessageSquare,
-  Search, Star, Flame, Plus, Send, Trash2, UserMinus
+  Search, Star, Flame, Plus, Send, Trash2, UserMinus,
+  ListVideo, Dices, Sparkles, Eye, CheckCircle2, Clock
 } from 'lucide-react';
+
+const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
 
 interface ComunidadFeedProps {
   user: any;
@@ -17,6 +20,7 @@ interface ComunidadFeedProps {
 }
 
 type TipoReaccion = 'fire' | 'heart' | 'eyes';
+type EstadoWatchlistGrupo = 'pending' | 'watching' | 'completed';
 
 interface MiembroGrupo {
   id: string;
@@ -39,6 +43,30 @@ interface InvitacionGrupo {
   inviter_username: string;
   invitee_id: string;
   status: 'pending' | 'accepted' | 'declined';
+}
+
+interface ItemWatchlistGrupo {
+  id: string;
+  group_id: string;
+  added_by: string;
+  added_by_username: string;
+  tmdb_id: number;
+  media_type: 'tv' | 'movie';
+  title: string;
+  poster_path: string | null;
+  vote_average: number;
+  status: EstadoWatchlistGrupo;
+  note?: string | null;
+  created_at: string;
+}
+
+interface ResultadoBusquedaTMDB {
+  id: number;
+  media_type: 'tv' | 'movie';
+  title: string;
+  year: string;
+  poster_path: string | null;
+  vote_average: number;
 }
 
 const OPCIONES_REACCION: { key: TipoReaccion; emoji: string; label: string }[] = [
@@ -67,11 +95,13 @@ export default function ComunidadFeed({
 
   const [solicitudesEntrantes, setSolicitudesEntrantes] = useState<any[]>([]);
   const [amigos, setAmigos] = useState<any[]>([]);
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
   const [mensajesNoLeidos, setMensajesNoLeidos] = useState<Record<string, number>>({});
   const [cargando, setCargando] = useState(true);
 
   const [grupos, setGrupos] = useState<GrupoAmigo[]>([]);
   const [grupoActivoId, setGrupoActivoId] = useState<string | null>(null);
+  const [vistaGrupo, setVistaGrupo] = useState<'chat' | 'watchlist'>('chat');
   const [nombreGrupo, setNombreGrupo] = useState('');
   const [miembrosSeleccionados, setMiembrosSeleccionados] = useState<string[]>([]);
   const [creandoGrupo, setCreandoGrupo] = useState(false);
@@ -86,8 +116,94 @@ export default function ComunidadFeed({
   const [eliminandoGrupoMsgId, setEliminandoGrupoMsgId] = useState<string | null>(null);
   const chatGrupoEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Estado de "Para ver juntos" en el grupo
+  const [watchlistGrupo, setWatchlistGrupo] = useState<ItemWatchlistGrupo[]>([]);
+  const [filtroWatchlistGrupo, setFiltroWatchlistGrupo] = useState<'all' | EstadoWatchlistGrupo>('all');
+  const [queryTituloGrupo, setQueryTituloGrupo] = useState('');
+  const [notaTituloGrupo, setNotaTituloGrupo] = useState('');
+  const [resultadosTituloTMDB, setResultadosTituloTMDB] = useState<ResultadoBusquedaTMDB[]>([]);
+  const [buscandoTituloTMDB, setBuscandoTituloTMDB] = useState(false);
+  const [anadiendoTituloId, setAnadiendoTituloId] = useState<string | null>(null);
+  const [actualizandoItemId, setActualizandoItemId] = useState<string | null>(null);
+  const [ganadorGrupo, setGanadorGrupo] = useState<ItemWatchlistGrupo | null>(null);
+  const [sorteandoGrupo, setSorteandoGrupo] = useState(false);
+
   useEffect(() => {
     cargarComunidad();
+  }, [user?.id]);
+
+  // Presencia en tiempo real para el indicador verde de amigos conectados
+  useEffect(() => {
+    if (!user?.id) {
+      setOnlineUserIds(new Set());
+      return;
+    }
+
+    let activo = true;
+    const canalPresencia = supabase.channel('plotverse-online-users', {
+      config: { presence: { key: user.id } },
+    });
+
+    const actualizarConectados = () => {
+      if (!activo) return;
+      const state = canalPresencia.presenceState();
+      setOnlineUserIds(new Set(Object.keys(state)));
+    };
+
+    canalPresencia
+      .on('presence', { event: 'sync' }, actualizarConectados)
+      .on('presence', { event: 'join' }, actualizarConectados)
+      .on('presence', { event: 'leave' }, actualizarConectados)
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED' && activo) {
+          await canalPresencia.track({
+            user_id: user.id,
+            username: user.user_metadata?.username || user.email?.split('@')[0] || 'usuario',
+            online_at: new Date().toISOString(),
+          });
+          actualizarConectados();
+        }
+      });
+
+    return () => {
+      activo = false;
+      supabase.removeChannel(canalPresencia);
+    };
+  }, [user?.id]);
+
+  // Sincronización Realtime de invitaciones y membresías de grupos
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const canalGruposSync = supabase
+      .channel(`grupos-sync-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friend_group_invitations',
+        },
+        () => {
+          cargarGruposUsuario(user.id);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friend_group_members',
+        },
+        () => {
+          cargarGruposUsuario(user.id);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(canalGruposSync);
+    };
   }, [user?.id]);
 
   useEffect(() => {
@@ -114,6 +230,134 @@ export default function ComunidadFeed({
       activo = false;
     };
   }, [user?.id, grupoActivoId]);
+
+  // Cargar y sincronizar en tiempo real la lista "Para ver juntos" del grupo activo
+  useEffect(() => {
+    setGanadorGrupo(null);
+    setResultadosTituloTMDB([]);
+    setQueryTituloGrupo('');
+    setNotaTituloGrupo('');
+
+    if (!user || !grupoActivoId) {
+      setWatchlistGrupo([]);
+      return;
+    }
+
+    let activo = true;
+
+    async function cargarWatchlistGrupo() {
+      const { data, error } = await supabase
+        .from('friend_group_watchlist')
+        .select('id, group_id, added_by, tmdb_id, media_type, title, poster_path, vote_average, status, note, created_at')
+        .eq('group_id', grupoActivoId)
+        .order('created_at', { ascending: false });
+
+      if (!activo) return;
+      if (error) {
+        console.error('Error cargando watchlist del grupo:', error);
+        setWatchlistGrupo([]);
+        return;
+      }
+
+      const rows = data || [];
+      const autoresIds = Array.from(new Set(rows.map((r: any) => r.added_by).filter(Boolean)));
+      const nombresMap: Record<string, string> = {};
+
+      if (autoresIds.length > 0) {
+        const { data: profs } = await supabase
+          .from('profiles')
+          .select('id, username')
+          .in('id', autoresIds);
+        (profs || []).forEach((p: any) => {
+          nombresMap[p.id] = p.username || 'usuario';
+        });
+      }
+
+      setWatchlistGrupo(
+        rows.map((r: any) => ({
+          ...r,
+          media_type: r.media_type === 'movie' ? 'movie' : 'tv',
+          vote_average: Number(r.vote_average || 0),
+          status: (r.status || 'pending') as EstadoWatchlistGrupo,
+          added_by_username:
+            r.added_by === user.id
+              ? user.user_metadata?.username || user.email?.split('@')[0] || 'tú'
+              : nombresMap[r.added_by] || 'usuario',
+        }))
+      );
+    }
+
+    cargarWatchlistGrupo();
+
+    const canalWatchlist = supabase
+      .channel(`grupo-watchlist-${grupoActivoId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'friend_group_watchlist',
+          filter: `group_id=eq.${grupoActivoId}`,
+        },
+        () => {
+          if (activo) cargarWatchlistGrupo();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      activo = false;
+      supabase.removeChannel(canalWatchlist);
+    };
+  }, [user?.id, grupoActivoId]);
+
+  // Búsqueda en TMDB para añadir títulos a "Para ver juntos"
+  useEffect(() => {
+    const q = queryTituloGrupo.trim();
+    if (!q || !TMDB_API_KEY) {
+      setResultadosTituloTMDB([]);
+      setBuscandoTituloTMDB(false);
+      return;
+    }
+
+    let activo = true;
+    setBuscandoTituloTMDB(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `https://api.themoviedb.org/3/search/multi?api_key=${TMDB_API_KEY}&language=es-ES&query=${encodeURIComponent(
+            q
+          )}&page=1`
+        );
+        const data = await res.json();
+        if (!activo) return;
+
+        const filtrados: ResultadoBusquedaTMDB[] = (data.results || [])
+          .filter((item: any) => item.media_type === 'tv' || item.media_type === 'movie')
+          .slice(0, 6)
+          .map((item: any) => ({
+            id: item.id,
+            media_type: item.media_type === 'movie' ? 'movie' : 'tv',
+            title: item.title || item.name || 'Título',
+            year: (item.release_date || item.first_air_date || '').slice(0, 4),
+            poster_path: item.poster_path || null,
+            vote_average: Number(item.vote_average || 0),
+          }));
+
+        setResultadosTituloTMDB(filtrados);
+      } catch (err) {
+        console.error('Error buscando en TMDB para el grupo:', err);
+      } finally {
+        if (activo) setBuscandoTituloTMDB(false);
+      }
+    }, 300);
+
+    return () => {
+      activo = false;
+      clearTimeout(timer);
+    };
+  }, [queryTituloGrupo]);
 
   useEffect(() => {
     if (!user || !grupoActivoId) {
@@ -211,8 +455,10 @@ export default function ComunidadFeed({
   }, [user?.id, grupoActivoId]);
 
   useEffect(() => {
-    chatGrupoEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [mensajesGrupo.length]);
+    if (vistaGrupo === 'chat') {
+      chatGrupoEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [mensajesGrupo.length, vistaGrupo]);
 
   async function cargarGruposUsuario(userId: string, listaAmigosRef: any[] = amigos) {
     const [{ data: groupsRows }, { data: membersRows }, { data: invRows }] = await Promise.all([
@@ -490,7 +736,7 @@ export default function ComunidadFeed({
       console.error('Error creando grupo:', error);
       setAvisoGrupo(
         error?.message ||
-          'No se pudo crear el grupo. Revisa la tabla friend_groups y sus políticas RLS.'
+        'No se pudo crear el grupo. Revisa la tabla friend_groups y sus políticas RLS.'
       );
       setCreandoGrupo(false);
       return;
@@ -528,8 +774,7 @@ export default function ComunidadFeed({
         setAvisoGrupo('Grupo creado, pero falló el envío de alguna invitación.');
       } else {
         setAvisoGrupo(
-          `Grupo "${nuevoGrupo.name}" creado. Invitación enviada a ${miembrosSeleccionados.length} ${
-            miembrosSeleccionados.length === 1 ? 'amigo' : 'amigos'
+          `Grupo "${nuevoGrupo.name}" creado. Invitación enviada a ${miembrosSeleccionados.length} ${miembrosSeleccionados.length === 1 ? 'amigo' : 'amigos'
           }.`
         );
       }
@@ -670,6 +915,158 @@ export default function ComunidadFeed({
       esMiUsuario ? `Has salido de "${grupoActivo.name}".` : `@${usernameMiembro} eliminado del grupo.`
     );
     setProcesandoMiembroId(null);
+  }
+
+  async function handleAnadirTituloWatchlistGrupo(item: ResultadoBusquedaTMDB) {
+    if (!user) return onRequireAuth();
+    if (!grupoActivoId || anadiendoTituloId) return;
+
+    const clave = `${item.media_type}-${item.id}`;
+    const yaExiste = watchlistGrupo.some(
+      (w) => w.tmdb_id === item.id && w.media_type === item.media_type
+    );
+    if (yaExiste) {
+      setAvisoGrupo(`"${item.title}" ya está en la lista del grupo.`);
+      return;
+    }
+
+    setAvisoGrupo(null);
+    setAnadiendoTituloId(clave);
+
+    const notaLimpia = notaTituloGrupo.trim().slice(0, 120) || null;
+    const miUsername = user.user_metadata?.username || user.email?.split('@')[0] || 'tú';
+
+    const { data, error } = await supabase
+      .from('friend_group_watchlist')
+      .insert({
+        group_id: grupoActivoId,
+        added_by: user.id,
+        tmdb_id: item.id,
+        media_type: item.media_type,
+        title: item.title,
+        poster_path: item.poster_path,
+        vote_average: item.vote_average,
+        status: 'pending',
+        note: notaLimpia,
+      })
+      .select('id, group_id, added_by, tmdb_id, media_type, title, poster_path, vote_average, status, note, created_at')
+      .single();
+
+    if (error || !data) {
+      console.error('Error añadiendo título al grupo:', error);
+      setAvisoGrupo(
+        error?.message ||
+        'No se pudo añadir el título. Revisa la tabla friend_group_watchlist y sus políticas RLS.'
+      );
+      setAnadiendoTituloId(null);
+      return;
+    }
+
+    const nuevoItem: ItemWatchlistGrupo = {
+      ...data,
+      media_type: data.media_type === 'movie' ? 'movie' : 'tv',
+      vote_average: Number(data.vote_average || 0),
+      status: (data.status || 'pending') as EstadoWatchlistGrupo,
+      added_by_username: miUsername,
+    };
+
+    setWatchlistGrupo((prev) =>
+      prev.some((w) => w.id === nuevoItem.id) ? prev : [nuevoItem, ...prev]
+    );
+    setQueryTituloGrupo('');
+    setNotaTituloGrupo('');
+    setResultadosTituloTMDB([]);
+    setAvisoGrupo(`"${item.title}" añadido a "Para ver juntos".`);
+    setAnadiendoTituloId(null);
+  }
+
+  async function handleCambiarEstadoWatchlistGrupo(
+    itemId: string,
+    nuevoEstado: EstadoWatchlistGrupo
+  ) {
+    if (!user || !grupoActivoId || actualizandoItemId) return;
+    setActualizandoItemId(itemId);
+
+    const { error } = await supabase
+      .from('friend_group_watchlist')
+      .update({ status: nuevoEstado })
+      .eq('id', itemId)
+      .eq('group_id', grupoActivoId);
+
+    if (!error) {
+      setWatchlistGrupo((prev) =>
+        prev.map((w) => (w.id === itemId ? { ...w, status: nuevoEstado } : w))
+      );
+    } else {
+      console.error('Error actualizando estado en watchlist del grupo:', error);
+    }
+
+    setActualizandoItemId(null);
+  }
+
+  async function handleEliminarWatchlistGrupo(item: ItemWatchlistGrupo) {
+    if (!user || !grupoActivo || actualizandoItemId) return;
+    const puedeBorrar = item.added_by === user.id || grupoActivo.created_by === user.id;
+    if (!puedeBorrar) return;
+
+    setActualizandoItemId(item.id);
+    const { error } = await supabase
+      .from('friend_group_watchlist')
+      .delete()
+      .eq('id', item.id)
+      .eq('group_id', grupoActivo.id);
+
+    if (!error) {
+      setWatchlistGrupo((prev) => prev.filter((w) => w.id !== item.id));
+      if (ganadorGrupo?.id === item.id) setGanadorGrupo(null);
+    }
+    setActualizandoItemId(null);
+  }
+
+  function handleSortearTituloGrupo() {
+    if (sorteandoGrupo) return;
+    const pendientes = watchlistGrupo.filter((w) => w.status === 'pending');
+    const pool = pendientes.length > 0 ? pendientes : watchlistGrupo;
+    if (pool.length === 0) return;
+
+    setSorteandoGrupo(true);
+    setGanadorGrupo(null);
+
+    let pasos = 0;
+    const totalPasos = 12;
+    const timer = setInterval(() => {
+      const elegido = pool[Math.floor(Math.random() * pool.length)];
+      setGanadorGrupo(elegido);
+      pasos++;
+      if (pasos >= totalPasos) {
+        clearInterval(timer);
+        setSorteandoGrupo(false);
+      }
+    }, 80);
+  }
+
+  async function handleAnunciarElegidoEnChat(item: ItemWatchlistGrupo) {
+    if (!user || !grupoActivoId) return;
+    await handleCambiarEstadoWatchlistGrupo(item.id, 'watching');
+
+    const { data } = await supabase
+      .from('friend_group_messages')
+      .insert({
+        group_id: grupoActivoId,
+        user_id: user.id,
+        content: `🎲 ¡Ha tocado ver juntos "${item.title}"!`,
+      })
+      .select('id, group_id, user_id, content, created_at')
+      .single();
+
+    if (data) {
+      const autor = user.user_metadata?.username || user.email?.split('@')[0] || 'tú';
+      setMensajesGrupo((prev) =>
+        prev.some((m) => m.id === data.id) ? prev : [...prev, { ...data, username: autor }]
+      );
+    }
+
+    setVistaGrupo('chat');
   }
 
   async function handleEnviarMensajeGrupo(e: React.FormEvent) {
@@ -818,6 +1215,10 @@ export default function ComunidadFeed({
     ? amigos.filter((am) => !grupoActivo.memberIds.includes(am.id))
     : [];
 
+  const watchlistFiltrada = watchlistGrupo.filter((w) =>
+    filtroWatchlistGrupo === 'all' ? true : w.status === filtroWatchlistGrupo
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-2">
@@ -825,11 +1226,10 @@ export default function ComunidadFeed({
           <button
             type="button"
             onClick={() => setTabComunidad('actividad')}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${
-              tabComunidad === 'actividad'
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${tabComunidad === 'actividad'
                 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
+              }`}
           >
             <Flame className="h-3.5 w-3.5" />
             Actividad
@@ -838,11 +1238,10 @@ export default function ComunidadFeed({
           <button
             type="button"
             onClick={() => setTabComunidad('amigos')}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${
-              tabComunidad === 'amigos'
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${tabComunidad === 'amigos'
                 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
+              }`}
           >
             <Users className="h-3.5 w-3.5" />
             Amigos y Chat
@@ -856,11 +1255,10 @@ export default function ComunidadFeed({
           <button
             type="button"
             onClick={() => (user ? setTabComunidad('grupos') : onRequireAuth())}
-            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${
-              tabComunidad === 'grupos'
+            className={`flex items-center gap-1.5 rounded-xl px-4 py-2 text-xs font-bold transition ${tabComunidad === 'grupos'
                 ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                 : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-            }`}
+              }`}
           >
             <MessageSquare className="h-3.5 w-3.5" />
             Grupos ({grupos.length})
@@ -914,11 +1312,10 @@ export default function ComunidadFeed({
                 setFiltroAmigoId('all');
                 setMostrarTodoFeed(false);
               }}
-              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                filtroAmigoId === 'all'
+              className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${filtroAmigoId === 'all'
                   ? 'bg-indigo-600 text-white shadow-sm'
                   : 'border border-slate-800 bg-slate-950 text-slate-300 hover:border-slate-700 hover:text-white'
-              }`}
+                }`}
             >
               Todos
             </button>
@@ -931,11 +1328,10 @@ export default function ComunidadFeed({
                     setFiltroAmigoId('friends_only');
                     setMostrarTodoFeed(false);
                   }}
-                  className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${
-                    filtroAmigoId === 'friends_only'
+                  className={`rounded-xl px-3 py-1.5 text-xs font-bold transition ${filtroAmigoId === 'friends_only'
                       ? 'bg-emerald-600 text-white shadow-sm'
                       : 'border border-slate-800 bg-slate-950 text-slate-300 hover:border-emerald-500/40 hover:text-white'
-                  }`}
+                    }`}
                 >
                   Solo amigos ({amigos.length})
                 </button>
@@ -948,11 +1344,10 @@ export default function ComunidadFeed({
                       setMostrarTodoFeed(false);
                     }
                   }}
-                  className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-bold transition focus:outline-none ${
-                    amigoSeleccionado
+                  className={`cursor-pointer rounded-xl border px-3 py-1.5 text-xs font-bold transition focus:outline-none ${amigoSeleccionado
                       ? 'border-indigo-400 bg-indigo-600 text-white'
                       : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-indigo-500/60'
-                  }`}
+                    }`}
                 >
                   <option value="" className="bg-slate-900 text-slate-400">
                     Elegir amigo...
@@ -979,8 +1374,8 @@ export default function ComunidadFeed({
                 {amigoSeleccionado
                   ? `@${amigoSeleccionado.username} no tiene actividad reciente.`
                   : filtroAmigoId === 'friends_only'
-                  ? 'Tus amigos no tienen actividad reciente.'
-                  : 'Por ahora no hay actividad reciente de otros miembros.'}
+                    ? 'Tus amigos no tienen actividad reciente.'
+                    : 'Por ahora no hay actividad reciente de otros miembros.'}
               </p>
               {filtroAmigoId !== 'all' && (
                 <button
@@ -1035,23 +1430,22 @@ export default function ComunidadFeed({
                         </button>
 
                         <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                            act.status === 'completed'
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${act.status === 'completed'
                               ? 'bg-emerald-500/20 text-emerald-300'
                               : act.status === 'watching'
-                              ? 'bg-indigo-500/20 text-indigo-300'
-                              : act.status === 'dropped'
-                              ? 'bg-rose-500/20 text-rose-300'
-                              : 'bg-amber-500/20 text-amber-300'
-                          }`}
+                                ? 'bg-indigo-500/20 text-indigo-300'
+                                : act.status === 'dropped'
+                                  ? 'bg-rose-500/20 text-rose-300'
+                                  : 'bg-amber-500/20 text-amber-300'
+                            }`}
                         >
                           {act.status === 'completed'
                             ? 'Vista'
                             : act.status === 'watching'
-                            ? `Viendo · T${act.current_season} E${act.current_episode}`
-                            : act.status === 'dropped'
-                            ? 'Abandonada'
-                            : 'Pendiente'}
+                              ? `Viendo · T${act.current_season} E${act.current_episode}`
+                              : act.status === 'dropped'
+                                ? 'Abandonada'
+                                : 'Pendiente'}
                         </span>
                       </div>
 
@@ -1093,11 +1487,10 @@ export default function ComunidadFeed({
                                 type="button"
                                 onClick={() => toggleReaccion(act, op.key)}
                                 title={op.label}
-                                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-bold transition active:scale-95 ${
-                                  activa
+                                className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-bold transition active:scale-95 ${activa
                                     ? 'border-indigo-400/70 bg-indigo-600/30 text-white'
                                     : 'border-slate-800 bg-slate-900/90 text-slate-400 hover:border-slate-700 hover:text-slate-200'
-                                }`}
+                                  }`}
                               >
                                 <span>{op.emoji}</span>
                                 {total > 0 && <span>{total}</span>}
@@ -1206,11 +1599,10 @@ export default function ComunidadFeed({
                                 key={am.id}
                                 type="button"
                                 onClick={() => toggleSeleccionMiembro(am.id)}
-                                className={`flex w-full items-center justify-between rounded-xl border px-2.5 py-1.5 text-xs transition ${
-                                  marcado
+                                className={`flex w-full items-center justify-between rounded-xl border px-2.5 py-1.5 text-xs transition ${marcado
                                     ? 'border-indigo-500/50 bg-indigo-600/20 font-bold text-white'
                                     : 'border-slate-800 bg-slate-900/70 text-slate-300 hover:bg-slate-900'
-                                }`}
+                                  }`}
                               >
                                 <span className="truncate">@{am.username}</span>
                                 {marcado && <Check className="h-3.5 w-3.5 text-indigo-400" />}
@@ -1251,11 +1643,10 @@ export default function ComunidadFeed({
                               key={g.id}
                               type="button"
                               onClick={() => setGrupoActivoId(g.id)}
-                              className={`flex w-full items-center justify-between rounded-2xl border px-3.5 py-2.5 text-left text-xs transition ${
-                                activo
+                              className={`flex w-full items-center justify-between rounded-2xl border px-3.5 py-2.5 text-left text-xs transition ${activo
                                   ? 'border-indigo-500/60 bg-indigo-600/20 font-bold text-white'
                                   : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:text-white'
-                              }`}
+                                }`}
                             >
                               <span className="truncate">{g.name}</span>
                               <span className="rounded-xl bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400">
@@ -1269,35 +1660,64 @@ export default function ComunidadFeed({
                   </div>
                 </div>
 
-                <div className="flex h-[430px] flex-col justify-between rounded-2xl border border-slate-800 bg-slate-950/85 p-4 lg:col-span-2">
+                <div className="flex min-h-[460px] flex-col justify-between rounded-2xl border border-slate-800 bg-slate-950/85 p-4 lg:col-span-2">
                   {!grupoActivo ? (
                     <div className="flex flex-1 items-center justify-center text-xs text-slate-500">
-                      Selecciona o crea un grupo para empezar a chatear.
+                      Selecciona o crea un grupo para empezar a chatear o armar su lista.
                     </div>
                   ) : (
                     <>
                       <div className="mb-3 space-y-2.5 border-b border-slate-800 pb-3">
-                        <div className="flex items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <h4 className="text-sm font-bold text-white">{grupoActivo.name}</h4>
                             <p className="text-[11px] text-slate-400">
                               {grupoActivo.members.length}{' '}
-                              {grupoActivo.members.length === 1 ? 'miembro' : 'miembros'}
+                              {grupoActivo.members.length === 1 ? 'miembro' : 'miembros'} ·{' '}
+                              {watchlistGrupo.length}{' '}
+                              {watchlistGrupo.length === 1 ? 'título en cola' : 'títulos en cola'}
                             </p>
                           </div>
 
-                          {grupoActivo.created_by === user.id && (
-                            <button
-                              type="button"
-                              onClick={handleEliminarGrupo}
-                              disabled={eliminandoGrupo}
-                              title="Eliminar grupo"
-                              className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/25 bg-rose-950/25 px-3 py-1.5 text-[11px] font-bold text-rose-300 transition hover:border-rose-500/45 hover:bg-rose-950/45 hover:text-rose-200 disabled:opacity-50"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              <span>{eliminandoGrupo ? 'Borrando...' : 'Eliminar grupo'}</span>
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            <div className="flex rounded-xl border border-slate-800 bg-slate-900 p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => setVistaGrupo('chat')}
+                                className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${vistaGrupo === 'chat'
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                  }`}
+                              >
+                                <MessageSquare className="h-3 w-3" />
+                                Chat
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setVistaGrupo('watchlist')}
+                                className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${vistaGrupo === 'watchlist'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-400 hover:text-white'
+                                  }`}
+                              >
+                                <ListVideo className="h-3 w-3" />
+                                Ver juntos ({watchlistGrupo.length})
+                              </button>
+                            </div>
+
+                            {grupoActivo.created_by === user.id && (
+                              <button
+                                type="button"
+                                onClick={handleEliminarGrupo}
+                                disabled={eliminandoGrupo}
+                                title="Eliminar grupo"
+                                className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/25 bg-rose-950/25 px-3 py-1.5 text-[11px] font-bold text-rose-300 transition hover:border-rose-500/45 hover:bg-rose-950/45 hover:text-rose-200 disabled:opacity-50"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span>{eliminandoGrupo ? 'Borrando...' : 'Eliminar'}</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         {grupoActivo.members.length > 0 && (
@@ -1305,11 +1725,17 @@ export default function ComunidadFeed({
                             {grupoActivo.members.map((miembro) => {
                               const puedeQuitar =
                                 grupoActivo.created_by === user.id || miembro.id === user.id;
+                              const enLinea = onlineUserIds.has(miembro.id);
                               return (
                                 <div
                                   key={miembro.id}
                                   className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold text-indigo-300"
                                 >
+                                  <span
+                                    title={enLinea ? 'Conectado' : 'Desconectado'}
+                                    className={`h-2 w-2 rounded-full ${enLinea ? 'bg-emerald-400' : 'bg-slate-600'
+                                      }`}
+                                  />
                                   <button
                                     type="button"
                                     onClick={() => onSelectUser(miembro.id)}
@@ -1354,11 +1780,10 @@ export default function ComunidadFeed({
                                     type="button"
                                     disabled={yaInvitado}
                                     onClick={() => handleInvitarAmigoAGrupo(am.id, am.username)}
-                                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
-                                      yaInvitado
+                                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${yaInvitado
                                         ? 'border-indigo-500/30 bg-indigo-950/30 text-indigo-300'
                                         : 'border-slate-800 bg-slate-900/70 text-slate-200 hover:border-indigo-500/50 hover:bg-slate-900 hover:text-white'
-                                    }`}
+                                      }`}
                                   >
                                     {yaInvitado ? (
                                       <Check className="h-3.5 w-3.5 text-indigo-400" />
@@ -1377,80 +1802,361 @@ export default function ComunidadFeed({
                         )}
                       </div>
 
-                      <div className="flex-1 space-y-2.5 overflow-y-auto pr-1">
-                        {mensajesGrupo.length === 0 ? (
-                          <p className="py-16 text-center text-xs text-slate-500">
-                            Aún no hay mensajes en este grupo. ¡Saluda a tus amigos!
-                          </p>
-                        ) : (
-                          mensajesGrupo.map((m) => {
-                            const mio = m.user_id === user.id;
-                            return (
-                              <div
-                                key={m.id}
-                                className={`flex flex-col ${mio ? 'items-end' : 'items-start'}`}
-                              >
-                                <div
-                                  className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-xs ${
-                                    mio
-                                      ? 'bg-indigo-600 text-white'
-                                      : 'border border-slate-800 bg-slate-900 text-slate-200'
-                                  }`}
-                                >
-                                  {!mio && (
-                                    <p className="mb-0.5 text-[10px] font-bold text-indigo-300">
-                                      @{m.username}
-                                    </p>
-                                  )}
-                                  <p className="break-words">{m.content}</p>
-                                </div>
-                                <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-500">
-                                  <span>
-                                    {new Date(m.created_at).toLocaleTimeString('es-ES', {
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })}
-                                  </span>
-                                  {mio && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleBorrarMensajeGrupo(m.id)}
-                                      disabled={eliminandoGrupoMsgId === m.id}
-                                      className="text-slate-600 hover:text-rose-400"
-                                      title="Borrar mensaje"
+                      {vistaGrupo === 'chat' ? (
+                        <>
+                          <div className="h-64 flex-1 space-y-2.5 overflow-y-auto pr-1">
+                            {mensajesGrupo.length === 0 ? (
+                              <p className="py-16 text-center text-xs text-slate-500">
+                                Aún no hay mensajes en este grupo. ¡Saluda a tus amigos!
+                              </p>
+                            ) : (
+                              mensajesGrupo.map((m) => {
+                                const mio = m.user_id === user.id;
+                                return (
+                                  <div
+                                    key={m.id}
+                                    className={`flex flex-col ${mio ? 'items-end' : 'items-start'}`}
+                                  >
+                                    <div
+                                      className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-xs ${mio
+                                          ? 'bg-indigo-600 text-white'
+                                          : 'border border-slate-800 bg-slate-900 text-slate-200'
+                                        }`}
                                     >
-                                      <Trash2 className="h-3 w-3" />
-                                    </button>
-                                  )}
+                                      {!mio && (
+                                        <p className="mb-0.5 text-[10px] font-bold text-indigo-300">
+                                          @{m.username}
+                                        </p>
+                                      )}
+                                      <p className="break-words">{m.content}</p>
+                                    </div>
+                                    <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-500">
+                                      <span>
+                                        {new Date(m.created_at).toLocaleTimeString('es-ES', {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                        })}
+                                      </span>
+                                      {mio && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleBorrarMensajeGrupo(m.id)}
+                                          disabled={eliminandoGrupoMsgId === m.id}
+                                          className="text-slate-600 hover:text-rose-400"
+                                          title="Borrar mensaje"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                            <div ref={chatGrupoEndRef} />
+                          </div>
+
+                          <form
+                            onSubmit={handleEnviarMensajeGrupo}
+                            className="mt-3 flex gap-2 border-t border-slate-800 pt-3"
+                          >
+                            <input
+                              type="text"
+                              maxLength={600}
+                              value={textoGrupo}
+                              onChange={(e) => setTextoGrupo(e.target.value)}
+                              placeholder={`Escribe en ${grupoActivo.name}...`}
+                              className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              disabled={!textoGrupo.trim() || enviandoGrupo}
+                              className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                            >
+                              <Send className="h-3.5 w-3.5" />
+                              Enviar
+                            </button>
+                          </form>
+                        </>
+                      ) : (
+                        <div className="flex flex-1 flex-col space-y-3.5 overflow-y-auto pr-1">
+                          {/* Buscador para añadir títulos a ver juntos */}
+                          <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900/75 p-3">
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                              <div className="relative sm:col-span-2">
+                                <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-emerald-400" />
+                                <input
+                                  type="text"
+                                  value={queryTituloGrupo}
+                                  onChange={(e) => setQueryTituloGrupo(e.target.value)}
+                                  placeholder="Buscar serie, peli, doc o reality para ver juntos..."
+                                  className="w-full rounded-xl border border-slate-800 bg-slate-950 py-1.5 pl-8 pr-3 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                                />
+                              </div>
+                              <input
+                                type="text"
+                                maxLength={100}
+                                value={notaTituloGrupo}
+                                onChange={(e) => setNotaTituloGrupo(e.target.value)}
+                                placeholder="Nota (ej. Para el finde)"
+                                className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none"
+                              />
+                            </div>
+
+                            {buscandoTituloTMDB && (
+                              <p className="text-[11px] text-slate-400">Buscando títulos...</p>
+                            )}
+
+                            {resultadosTituloTMDB.length > 0 && (
+                              <div className="grid grid-cols-1 gap-1.5 pt-1 sm:grid-cols-2">
+                                {resultadosTituloTMDB.map((resItem) => {
+                                  const clave = `${resItem.media_type}-${resItem.id}`;
+                                  const yaEsta = watchlistGrupo.some(
+                                    (w) =>
+                                      w.tmdb_id === resItem.id &&
+                                      w.media_type === resItem.media_type
+                                  );
+                                  return (
+                                    <div
+                                      key={clave}
+                                      className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950 p-2"
+                                    >
+                                      <div className="flex min-w-0 items-center gap-2">
+                                        <img
+                                          src={getPosterUrl(resItem.poster_path, 'w342')}
+                                          alt={resItem.title}
+                                          className="h-10 w-7 shrink-0 rounded object-cover"
+                                        />
+                                        <div className="min-w-0">
+                                          <p className="truncate text-xs font-bold text-white">
+                                            {resItem.title}
+                                          </p>
+                                          <p className="text-[10px] text-slate-400">
+                                            {resItem.media_type === 'movie' ? 'Película' : 'Serie'}
+                                            {resItem.year ? ` · ${resItem.year}` : ''}
+                                          </p>
+                                        </div>
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        disabled={yaEsta || anadiendoTituloId === clave}
+                                        onClick={() => handleAnadirTituloWatchlistGrupo(resItem)}
+                                        className={`shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-bold transition ${yaEsta
+                                            ? 'bg-slate-800 text-slate-400'
+                                            : 'bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50'
+                                          }`}
+                                      >
+                                        {yaEsta
+                                          ? 'En cola'
+                                          : anadiendoTituloId === clave
+                                            ? '...'
+                                            : '+ Añadir'}
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Filtros de estado + Sorteo rápido entre títulos del grupo */}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap gap-1">
+                              {(
+                                [
+                                  { id: 'all', label: `Todos (${watchlistGrupo.length})` },
+                                  {
+                                    id: 'pending',
+                                    label: `Pendientes (${watchlistGrupo.filter((w) => w.status === 'pending').length})`,
+                                  },
+                                  {
+                                    id: 'watching',
+                                    label: `Viendo (${watchlistGrupo.filter((w) => w.status === 'watching').length})`,
+                                  },
+                                  {
+                                    id: 'completed',
+                                    label: `Vistas (${watchlistGrupo.filter((w) => w.status === 'completed').length})`,
+                                  },
+                                ] as const
+                              ).map((f) => (
+                                <button
+                                  key={f.id}
+                                  type="button"
+                                  onClick={() => setFiltroWatchlistGrupo(f.id)}
+                                  className={`rounded-xl px-2.5 py-1 text-[11px] font-bold transition ${filtroWatchlistGrupo === f.id
+                                      ? 'bg-indigo-600 text-white'
+                                      : 'border border-slate-800 bg-slate-900 text-slate-300 hover:text-white'
+                                    }`}
+                                >
+                                  {f.label}
+                                </button>
+                              ))}
+                            </div>
+
+                            {watchlistGrupo.length > 0 && (
+                              <button
+                                type="button"
+                                disabled={sorteandoGrupo}
+                                onClick={handleSortearTituloGrupo}
+                                className="inline-flex items-center gap-1 rounded-xl border border-amber-400/40 bg-amber-500/15 px-3 py-1 text-[11px] font-bold text-amber-300 transition hover:bg-amber-500/25 disabled:opacity-50"
+                              >
+                                <Dices className="h-3.5 w-3.5" />
+                                {sorteandoGrupo ? 'Sorteando...' : 'Sortear título'}
+                              </button>
+                            )}
+                          </div>
+
+                          {ganadorGrupo && (
+                            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-950/25 p-3">
+                              <div className="flex items-center gap-2.5">
+                                <Sparkles className="h-4 w-4 shrink-0 text-emerald-400" />
+                                <div>
+                                  <p className="text-[10px] font-bold uppercase text-emerald-300">
+                                    Elección del grupo
+                                  </p>
+                                  <p className="text-xs font-bold text-white">
+                                    {ganadorGrupo.title}
+                                  </p>
                                 </div>
                               </div>
-                            );
-                          })
-                        )}
-                        <div ref={chatGrupoEndRef} />
-                      </div>
+                              <button
+                                type="button"
+                                onClick={() => handleAnunciarElegidoEnChat(ganadorGrupo)}
+                                className="rounded-xl bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-emerald-500"
+                              >
+                                Empezar y avisar en chat
+                              </button>
+                            </div>
+                          )}
 
-                      <form
-                        onSubmit={handleEnviarMensajeGrupo}
-                        className="mt-3 flex gap-2 border-t border-slate-800 pt-3"
-                      >
-                        <input
-                          type="text"
-                          maxLength={600}
-                          value={textoGrupo}
-                          onChange={(e) => setTextoGrupo(e.target.value)}
-                          placeholder={`Escribe en ${grupoActivo.name}...`}
-                          className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
-                        />
-                        <button
-                          type="submit"
-                          disabled={!textoGrupo.trim() || enviandoGrupo}
-                          className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-bold text-white transition hover:bg-indigo-500 disabled:opacity-50"
-                        >
-                          <Send className="h-3.5 w-3.5" />
-                          Enviar
-                        </button>
-                      </form>
+                          {watchlistFiltrada.length === 0 ? (
+                            <p className="rounded-2xl border border-slate-800/80 bg-slate-900/50 py-10 text-center text-xs text-slate-500">
+                              No hay títulos en esta vista de "Para ver juntos". Busca uno arriba para añadirlo.
+                            </p>
+                          ) : (
+                            <div className="space-y-2">
+                              {watchlistFiltrada.map((item) => {
+                                const puedeBorrar =
+                                  item.added_by === user.id || grupoActivo.created_by === user.id;
+
+                                return (
+                                  <div
+                                    key={item.id}
+                                    className="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/75 p-2.5"
+                                  >
+                                    <div className="flex min-w-0 items-center gap-3">
+                                      <img
+                                        src={getPosterUrl(item.poster_path, 'w342')}
+                                        alt={item.title}
+                                        onClick={() =>
+                                          onSelectSerie({
+                                            id: item.tmdb_id,
+                                            media_type: item.media_type,
+                                            name: item.title,
+                                            overview: '',
+                                            poster_path: item.poster_path,
+                                            backdrop_path: null,
+                                            first_air_date: '',
+                                            vote_average: item.vote_average,
+                                          })
+                                        }
+                                        className="h-14 w-10 shrink-0 cursor-pointer rounded-lg object-cover"
+                                      />
+                                      <div className="min-w-0">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            onSelectSerie({
+                                              id: item.tmdb_id,
+                                              media_type: item.media_type,
+                                              name: item.title,
+                                              overview: '',
+                                              poster_path: item.poster_path,
+                                              backdrop_path: null,
+                                              first_air_date: '',
+                                              vote_average: item.vote_average,
+                                            })
+                                          }
+                                          className="block truncate text-left text-xs font-bold text-white hover:text-indigo-300"
+                                        >
+                                          {item.title}
+                                        </button>
+                                        <p className="text-[10px] text-slate-400">
+                                          Propuesto por @{item.added_by_username} ·{' '}
+                                          {item.media_type === 'movie' ? 'Película' : 'Serie'}
+                                        </p>
+                                        {item.note && (
+                                          <p className="mt-0.5 truncate text-[11px] italic text-indigo-300">
+                                            "{item.note}"
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="flex shrink-0 items-center gap-1">
+                                      <button
+                                        type="button"
+                                        disabled={actualizandoItemId === item.id}
+                                        onClick={() =>
+                                          handleCambiarEstadoWatchlistGrupo(item.id, 'pending')
+                                        }
+                                        title="Marcar como pendiente"
+                                        className={`rounded-lg p-1.5 text-[11px] transition ${item.status === 'pending'
+                                            ? 'bg-amber-500/20 text-amber-300'
+                                            : 'bg-slate-950 text-slate-500 hover:text-amber-300'
+                                          }`}
+                                      >
+                                        <Clock className="h-3.5 w-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={actualizandoItemId === item.id}
+                                        onClick={() =>
+                                          handleCambiarEstadoWatchlistGrupo(item.id, 'watching')
+                                        }
+                                        title="Viendo juntos"
+                                        className={`rounded-lg p-1.5 text-[11px] transition ${item.status === 'watching'
+                                            ? 'bg-indigo-600 text-white'
+                                            : 'bg-slate-950 text-slate-500 hover:text-indigo-300'
+                                          }`}
+                                      >
+                                        <Eye className="h-3.5 w-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={actualizandoItemId === item.id}
+                                        onClick={() =>
+                                          handleCambiarEstadoWatchlistGrupo(item.id, 'completed')
+                                        }
+                                        title="Vista por el grupo"
+                                        className={`rounded-lg p-1.5 text-[11px] transition ${item.status === 'completed'
+                                            ? 'bg-emerald-600 text-white'
+                                            : 'bg-slate-950 text-slate-500 hover:text-emerald-300'
+                                          }`}
+                                      >
+                                        <CheckCircle2 className="h-3.5 w-3.5" />
+                                      </button>
+
+                                      {puedeBorrar && (
+                                        <button
+                                          type="button"
+                                          disabled={actualizandoItemId === item.id}
+                                          onClick={() => handleEliminarWatchlistGrupo(item)}
+                                          title="Quitar de la lista del grupo"
+                                          className="rounded-lg bg-slate-950 p-1.5 text-slate-500 transition hover:bg-rose-950/50 hover:text-rose-400"
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -1469,24 +2175,35 @@ export default function ComunidadFeed({
                 <p className="text-xs text-slate-500">No se encontró ningún usuario.</p>
               ) : (
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {usuariosBusqueda.map((u) => (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => onSelectUser(u.id)}
-                      className="flex items-center gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-left transition hover:border-indigo-500/60"
-                    >
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold uppercase text-white">
-                        {(u.username || 'U')[0]}
-                      </div>
-                      <div className="truncate">
-                        <p className="truncate text-xs font-bold text-white">@{u.username}</p>
-                        <p className="truncate text-[11px] text-slate-400">
-                          {u.bio || 'Ver perfil'}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
+                  {usuariosBusqueda.map((u) => {
+                    const estaConectado = onlineUserIds.has(u.id);
+                    return (
+                      <button
+                        key={u.id}
+                        type="button"
+                        onClick={() => onSelectUser(u.id)}
+                        className="flex items-center justify-between gap-2.5 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-left transition hover:border-indigo-500/60"
+                      >
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-indigo-600 text-xs font-bold uppercase text-white">
+                            {(u.username || 'U')[0]}
+                            {estaConectado && (
+                              <span
+                                title="Conectado"
+                                className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-400 ring-2 ring-slate-900"
+                              />
+                            )}
+                          </div>
+                          <div className="truncate">
+                            <p className="truncate text-xs font-bold text-white">@{u.username}</p>
+                            <p className="truncate text-[11px] text-slate-400">
+                              {estaConectado ? 'En línea' : u.bio || 'Ver perfil'}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1554,24 +2271,40 @@ export default function ComunidadFeed({
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
               {amigos.map((am) => {
                 const sinLeer = mensajesNoLeidos[am.id] || 0;
+                const estaConectado = onlineUserIds.has(am.id);
                 return (
                   <button
                     key={am.id}
                     type="button"
                     onClick={() => onSelectUser(am.id)}
-                    className={`flex items-center justify-between rounded-2xl border p-3 text-left transition hover:border-indigo-500/60 ${
-                      sinLeer > 0
+                    className={`flex items-center justify-between rounded-2xl border p-3 text-left transition hover:border-indigo-500/60 ${sinLeer > 0
                         ? 'border-indigo-400/60 bg-indigo-950/35'
                         : 'border-slate-800 bg-slate-950/85 hover:bg-slate-900'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center gap-2.5 truncate">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600/25 text-xs font-bold uppercase text-indigo-200">
+                      <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600/25 text-xs font-bold uppercase text-indigo-200">
                         {(am.username || 'A')[0]}
+                        <span
+                          title={estaConectado ? 'Conectado' : 'Desconectado'}
+                          className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-slate-950 ${
+                            estaConectado ? 'bg-emerald-400' : 'bg-slate-600'
+                          }`}
+                        />
                       </div>
                       <div className="truncate">
-                        <p className="truncate text-xs font-bold text-white">@{am.username}</p>
-                        <p className="text-[11px] text-slate-400">Ver perfil / Chat</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="truncate text-xs font-bold text-white">@{am.username}</p>
+                          {estaConectado && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                              En línea
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                          {estaConectado ? 'Conectado ahora · Ver perfil / Chat' : 'Ver perfil / Chat'}
+                        </p>
                       </div>
                     </div>
 

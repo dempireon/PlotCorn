@@ -6,9 +6,9 @@ import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import EditarPerfilModal from '@/components/EditarPerfilModal';
 import {
   UserPlus, UserCheck, MessageSquare, Send,
-  Eye, Check, Clock, Star, Folder, Copy, Edit3, Save, Share2,
-  Users, BarChart3, ArrowLeft, PauseCircle, Film, Tv, Sparkles, Clapperboard,
-  Camera, Wifi
+  Star, Folder, Copy, Edit3, Save, Share2,
+  Users, BarChart3, ArrowLeft, Clock,
+  Camera, Wifi, Check
 } from 'lucide-react';
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
@@ -777,50 +777,30 @@ export default function UserProfileModal({
       ).toFixed(1)
       : '0';
 
-  const segmentosFormato = useMemo(() => {
+  const segmentosDonutFormato = useMemo(() => {
     return [
-      {
-        key: 'tv',
-        label: 'Series',
-        count: totalSeries,
-        pct: totalTitulos > 0 ? Math.round((totalSeries / totalTitulos) * 100) : 0,
-        barClass: 'bg-indigo-500',
-        dotClass: 'bg-indigo-400',
-        textClass: 'text-indigo-300',
-        icon: Tv,
-      },
-      {
-        key: 'movie',
-        label: 'Películas',
-        count: totalPelis,
-        pct: totalTitulos > 0 ? Math.round((totalPelis / totalTitulos) * 100) : 0,
-        barClass: 'bg-rose-500',
-        dotClass: 'bg-rose-400',
-        textClass: 'text-rose-300',
-        icon: Film,
-      },
-      {
-        key: 'reality',
-        label: 'Realities',
-        count: totalRealities,
-        pct: totalTitulos > 0 ? Math.round((totalRealities / totalTitulos) * 100) : 0,
-        barClass: 'bg-amber-400',
-        dotClass: 'bg-amber-400',
-        textClass: 'text-amber-300',
-        icon: Sparkles,
-      },
-      {
-        key: 'documentary',
-        label: 'Documentales',
-        count: totalDocumentales,
-        pct: totalTitulos > 0 ? Math.round((totalDocumentales / totalTitulos) * 100) : 0,
-        barClass: 'bg-cyan-400',
-        dotClass: 'bg-cyan-400',
-        textClass: 'text-cyan-300',
-        icon: Clapperboard,
-      },
+      { key: 'tv', label: 'Series', count: totalSeries, color: '#6366f1' },
+      { key: 'movie', label: 'Películas', count: totalPelis, color: '#f43f5e' },
+      { key: 'reality', label: 'Realities', count: totalRealities, color: '#f59e0b' },
+      { key: 'documentary', label: 'Documentales', count: totalDocumentales, color: '#06b6d4' },
     ];
-  }, [totalTitulos, totalSeries, totalPelis, totalRealities, totalDocumentales]);
+  }, [totalSeries, totalPelis, totalRealities, totalDocumentales]);
+
+  const sumaDonutFormato = segmentosDonutFormato.reduce(
+    (acc, item) => acc + Math.max(0, item.count),
+    0
+  );
+
+  const barrasEstado = useMemo(() => {
+    return [
+      { key: 'watching', label: 'Viendo', value: viendoCount, barClass: 'bg-indigo-500' },
+      { key: 'completed', label: 'Vistas', value: completadosCount, barClass: 'bg-emerald-500' },
+      { key: 'watchlist', label: 'Pendientes', value: pendientesCount, barClass: 'bg-amber-400' },
+      { key: 'dropped', label: 'Abandonadas', value: abandonadosCount, barClass: 'bg-rose-500' },
+    ];
+  }, [viendoCount, completadosCount, pendientesCount, abandonadosCount]);
+
+  const maxBarraEstado = Math.max(1, ...barrasEstado.map((b) => Math.max(0, b.value)));
 
   const distribucionEstrellas = useMemo(() => {
     return [5, 4, 3, 2, 1].map((estrella) => {
@@ -849,6 +829,10 @@ export default function UserProfileModal({
   const totalNoLeidos = Object.values(mensajesNoLeidos).reduce((a, b) => a + b, 0);
   const badgeAmigos = misSolicitudes.length + totalNoLeidos;
   const perfilEstaConectado = usuariosConectadosIds.has(String(usuarioActivoId));
+
+  const radioDonut = 30;
+  const circunferenciaDonut = 2 * Math.PI * radioDonut;
+  let acumuladoDonut = 0;
 
   return (
     <div className="overflow-hidden rounded-3xl border border-slate-800/90 bg-slate-950 shadow-2xl">
@@ -1431,86 +1415,99 @@ export default function UserProfileModal({
             </div>
 
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="flex flex-col justify-between space-y-4 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-5">
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                      Formato y estados
-                    </h4>
-                    <span className="text-[11px] font-medium text-slate-400">
-                      {totalTitulos} {totalTitulos === 1 ? 'título' : 'títulos'}
-                    </span>
+              <div className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-900/50 p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                    Formato y estados
+                  </h4>
+                  <span className="text-[11px] font-medium text-slate-400">
+                    {totalTitulos} {totalTitulos === 1 ? 'título' : 'títulos'}
+                  </span>
+                </div>
+
+                {/* Donut de formato + leyenda compacta */}
+                <div className="flex items-center gap-4">
+                  <div className="relative h-24 w-24 shrink-0">
+                    <svg viewBox="0 0 76 76" className="h-full w-full -rotate-90">
+                      <circle
+                        cx="38"
+                        cy="38"
+                        r={radioDonut}
+                        fill="none"
+                        stroke="#1e293b"
+                        strokeWidth="9"
+                      />
+                      {sumaDonutFormato > 0 &&
+                        segmentosDonutFormato.map((item) => {
+                          const val = Math.max(0, item.count);
+                          if (val === 0) return null;
+                          const longitud = (val / sumaDonutFormato) * circunferenciaDonut;
+                          const offset = -acumuladoDonut;
+                          acumuladoDonut += longitud;
+
+                          return (
+                            <circle
+                              key={item.key}
+                              cx="38"
+                              cy="38"
+                              r={radioDonut}
+                              fill="none"
+                              stroke={item.color}
+                              strokeWidth="9"
+                              strokeDasharray={`${longitud} ${circunferenciaDonut}`}
+                              strokeDashoffset={offset}
+                              strokeLinecap="round"
+                            />
+                          );
+                        })}
+                    </svg>
+                    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                      <span className="text-sm font-extrabold leading-none text-white">
+                        {totalTitulos}
+                      </span>
+                      <span className="mt-0.5 text-[9px] text-slate-400">títulos</span>
+                    </div>
                   </div>
 
-                  <div className="flex h-2 w-full overflow-hidden rounded-full bg-slate-950 ring-1 ring-slate-800/80">
-                    {totalTitulos > 0 &&
-                      segmentosFormato.map((seg) =>
-                        seg.count > 0 ? (
-                          <div
-                            key={seg.key}
-                            style={{ width: `${(seg.count / totalTitulos) * 100}%` }}
-                            className={`${seg.barClass} transition-all duration-300`}
-                            title={`${seg.label}: ${seg.count} (${seg.pct}%)`}
+                  <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5">
+                    {segmentosDonutFormato.map((item) => (
+                      <div
+                        key={item.key}
+                        className="flex items-center justify-between gap-1.5 rounded-xl border border-slate-800/80 bg-slate-950/75 px-2.5 py-1.5 text-[11px]"
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5 text-slate-300">
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: item.color }}
                           />
-                        ) : null
-                      )}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    {segmentosFormato.map((seg) => {
-                      const Icono = seg.icon;
-                      return (
-                        <div
-                          key={seg.key}
-                          className="flex items-center justify-between rounded-lg border border-slate-800/70 bg-slate-950/60 px-2.5 py-1.5"
-                        >
-                          <span className="inline-flex items-center gap-1.5 text-slate-300">
-                            <span className={`h-2 w-2 rounded-full ${seg.dotClass}`} />
-                            <Icono className={`h-3 w-3 ${seg.textClass}`} />
-                            <span>{seg.label}</span>
-                          </span>
-                          <span className="font-bold text-white">
-                            {seg.count}{' '}
-                            <span className="font-normal text-slate-500">({seg.pct}%)</span>
-                          </span>
-                        </div>
-                      );
-                    })}
+                          <span className="truncate">{item.label}</span>
+                        </span>
+                        <span className="font-bold text-white">{item.count}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2.5 pt-1 text-xs">
-                  <div className="flex items-center justify-between rounded-xl border border-slate-800/90 bg-slate-950/75 px-3.5 py-2.5">
-                    <span className="flex items-center gap-2 text-slate-300">
-                      <Eye className="h-3.5 w-3.5 text-indigo-400" />
-                      <span>Viendo</span>
-                    </span>
-                    <span className="font-extrabold text-indigo-300">{viendoCount}</span>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-xl border border-slate-800/90 bg-slate-950/75 px-3.5 py-2.5">
-                    <span className="flex items-center gap-2 text-slate-300">
-                      <Clock className="h-3.5 w-3.5 text-amber-400" />
-                      <span>Pendientes</span>
-                    </span>
-                    <span className="font-extrabold text-amber-300">{pendientesCount}</span>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-xl border border-slate-800/90 bg-slate-950/75 px-3.5 py-2.5">
-                    <span className="flex items-center gap-2 text-slate-300">
-                      <Check className="h-3.5 w-3.5 text-emerald-400" />
-                      <span>Vistas</span>
-                    </span>
-                    <span className="font-extrabold text-emerald-300">{completadosCount}</span>
-                  </div>
-
-                  <div className="flex items-center justify-between rounded-xl border border-slate-800/90 bg-slate-950/75 px-3.5 py-2.5">
-                    <span className="flex items-center gap-2 text-slate-300">
-                      <PauseCircle className="h-3.5 w-3.5 text-rose-400" />
-                      <span>Abandonadas</span>
-                    </span>
-                    <span className="font-extrabold text-rose-300">{abandonadosCount}</span>
-                  </div>
+                {/* Barras finas redondeadas de estado (solo número a la derecha) */}
+                <div className="space-y-2 border-t border-slate-800/80 pt-3">
+                  {barrasEstado.map((est) => {
+                    const val = Math.max(0, est.value);
+                    const pct = Math.round((val / maxBarraEstado) * 100);
+                    return (
+                      <div key={est.key} className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-medium text-slate-300">{est.label}</span>
+                          <span className="font-bold text-white">{val}</span>
+                        </div>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-950">
+                          <div
+                            className={`h-full rounded-full transition-all duration-300 ${est.barClass}`}
+                            style={{ width: `${val > 0 ? Math.max(pct, 8) : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
