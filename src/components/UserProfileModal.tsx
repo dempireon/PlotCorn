@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import {
   X, UserPlus, UserCheck, MessageSquare, Send,
-  Eye, Check, Clock, Star, Folder, Copy, Edit3, Save, Share2, Users, BarChart3
+  Eye, Check, Clock, Star, Folder, Copy, Edit3, Save, Share2, Users, BarChart3, ArrowLeft
 } from 'lucide-react';
 
 interface UserProfileModalProps {
@@ -42,6 +42,8 @@ export default function UserProfileModal({
   onSelectMedia,
   onRequireAuth,
 }: UserProfileModalProps) {
+  const [usuarioActivoId, setUsuarioActivoId] = useState<string>(targetUserId);
+
   const [perfil, setPerfil] = useState<any>(null);
   const [bioEdit, setBioEdit] = useState('');
   const [editandoBio, setEditandoBio] = useState(false);
@@ -71,31 +73,35 @@ export default function UserProfileModal({
   const [clonandoColId, setClonandoColId] = useState<string | null>(null);
   const [perfilCopiado, setPerfilCopiado] = useState(false);
 
-  const esMiPerfil = currentUser?.id === targetUserId;
+  useEffect(() => {
+    setUsuarioActivoId(targetUserId);
+  }, [targetUserId]);
+
+  const esMiPerfil = currentUser?.id === usuarioActivoId;
 
   useEffect(() => {
     setTabPerfil('estadisticas');
-    cargarTodoPerfil();
-  }, [targetUserId, currentUser?.id]);
+    cargarTodoPerfil(usuarioActivoId);
+  }, [usuarioActivoId, currentUser?.id]);
 
   useEffect(() => {
     if (tabPerfil === 'chat' && currentUser && !esMiPerfil) {
-      cargarMensajes();
-      const intervalo = setInterval(cargarMensajes, 4000);
+      cargarMensajes(usuarioActivoId);
+      const intervalo = setInterval(() => cargarMensajes(usuarioActivoId), 4000);
       return () => clearInterval(intervalo);
     }
-  }, [tabPerfil, targetUserId, currentUser?.id]);
+  }, [tabPerfil, usuarioActivoId, currentUser?.id, esMiPerfil]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [mensajes]);
 
   async function compartirPerfil() {
-    const url = `${window.location.origin}/?user=${targetUserId}`;
+    const url = `${window.location.origin}/?user=${usuarioActivoId}`;
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `Perfil de @${perfil?.username || 'usuario'} en PlotCorn`,
+          title: `Perfil de @${perfil?.username || 'usuario'} en PlotVerse`,
           url,
         });
         return;
@@ -106,28 +112,28 @@ export default function UserProfileModal({
     setTimeout(() => setPerfilCopiado(false), 2500);
   }
 
-  async function cargarTodoPerfil() {
+  async function cargarTodoPerfil(uid: string) {
     setCargando(true);
 
     const { data: profData } = await supabase
       .from('profiles')
       .select('*')
-      .eq('id', targetUserId)
+      .eq('id', uid)
       .single();
 
-    setPerfil(profData || { id: targetUserId, username: 'usuario', bio: '' });
+    setPerfil(profData || { id: uid, username: 'usuario', bio: '' });
     setBioEdit(profData?.bio || '');
 
     const [{ data: uSeries }, { data: epRows }] = await Promise.all([
       supabase
         .from('user_series')
         .select('*')
-        .eq('user_id', targetUserId)
+        .eq('user_id', uid)
         .order('updated_at', { ascending: false }),
       supabase
         .from('watched_episodes')
         .select('*')
-        .eq('user_id', targetUserId),
+        .eq('user_id', uid),
     ]);
 
     const ids = Array.from(new Set((uSeries || []).map((u) => Number(u.tmdb_id)).filter(Boolean)));
@@ -167,7 +173,7 @@ export default function UserProfileModal({
     const { data: cols } = await supabase
       .from('user_collections')
       .select('*')
-      .eq('user_id', targetUserId)
+      .eq('user_id', uid)
       .eq('is_public', true)
       .order('created_at', { ascending: false });
 
@@ -215,16 +221,18 @@ export default function UserProfileModal({
     const { count: segCount } = await supabase
       .from('follows')
       .select('*', { count: 'exact', head: true })
-      .eq('following_id', targetUserId);
+      .eq('following_id', uid);
     setSeguidoresCount(segCount || 0);
 
     const { count: sigCount } = await supabase
       .from('follows')
       .select('*', { count: 'exact', head: true })
-      .eq('follower_id', targetUserId);
+      .eq('follower_id', uid);
     setSiguiendoCount(sigCount || 0);
 
-    if (currentUser && esMiPerfil) {
+    const esPerfilPropio = currentUser?.id === uid;
+
+    if (currentUser && esPerfilPropio) {
       const { data: fRows } = await supabase
         .from('friendships')
         .select('*')
@@ -287,7 +295,7 @@ export default function UserProfileModal({
         conteo[m.sender_id] = (conteo[m.sender_id] || 0) + 1;
       });
       setMensajesNoLeidos(conteo);
-    } else if (currentUser && !esMiPerfil) {
+    } else if (currentUser && !esPerfilPropio) {
       setMisSolicitudes([]);
       setMisAmigos([]);
       setMensajesNoLeidos({});
@@ -296,7 +304,7 @@ export default function UserProfileModal({
         .from('follows')
         .select('*')
         .eq('follower_id', currentUser.id)
-        .eq('following_id', targetUserId)
+        .eq('following_id', uid)
         .maybeSingle();
       setLoSigo(!!followRow);
 
@@ -304,7 +312,7 @@ export default function UserProfileModal({
         .from('friendships')
         .select('*')
         .or(
-          `and(requester_id.eq.${currentUser.id},addressee_id.eq.${targetUserId}),and(requester_id.eq.${targetUserId},addressee_id.eq.${currentUser.id})`
+          `and(requester_id.eq.${currentUser.id},addressee_id.eq.${uid}),and(requester_id.eq.${uid},addressee_id.eq.${currentUser.id})`
         )
         .maybeSingle();
 
@@ -335,7 +343,7 @@ export default function UserProfileModal({
     } else {
       await supabase.from('friendships').delete().eq('id', idSolicitud);
     }
-    cargarTodoPerfil();
+    cargarTodoPerfil(usuarioActivoId);
   }
 
   async function toggleSeguir() {
@@ -347,13 +355,13 @@ export default function UserProfileModal({
         .from('follows')
         .delete()
         .eq('follower_id', currentUser.id)
-        .eq('following_id', targetUserId);
+        .eq('following_id', usuarioActivoId);
     } else {
       setLoSigo(true);
       setSeguidoresCount((c) => c + 1);
       await supabase.from('follows').insert({
         follower_id: currentUser.id,
-        following_id: targetUserId,
+        following_id: usuarioActivoId,
       });
     }
   }
@@ -366,7 +374,7 @@ export default function UserProfileModal({
         .from('friendships')
         .insert({
           requester_id: currentUser.id,
-          addressee_id: targetUserId,
+          addressee_id: usuarioActivoId,
           status: 'pending',
         })
         .select()
@@ -398,13 +406,13 @@ export default function UserProfileModal({
     setEditandoBio(false);
   }
 
-  async function cargarMensajes() {
+  async function cargarMensajes(uid: string) {
     if (!currentUser) return;
     const { data } = await supabase
       .from('direct_messages')
       .select('*')
       .or(
-        `and(sender_id.eq.${currentUser.id},receiver_id.eq.${targetUserId}),and(sender_id.eq.${targetUserId},receiver_id.eq.${currentUser.id})`
+        `and(sender_id.eq.${currentUser.id},receiver_id.eq.${uid}),and(sender_id.eq.${uid},receiver_id.eq.${currentUser.id})`
       )
       .order('created_at', { ascending: true });
 
@@ -413,7 +421,7 @@ export default function UserProfileModal({
     await supabase
       .from('direct_messages')
       .update({ read: true })
-      .eq('sender_id', targetUserId)
+      .eq('sender_id', uid)
       .eq('receiver_id', currentUser.id)
       .eq('read', false);
   }
@@ -431,7 +439,7 @@ export default function UserProfileModal({
       .from('direct_messages')
       .insert({
         sender_id: currentUser.id,
-        receiver_id: targetUserId,
+        receiver_id: usuarioActivoId,
         content: texto,
       })
       .select()
@@ -524,16 +532,27 @@ export default function UserProfileModal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+      className="fixed inset-x-0 top-0 bottom-16 z-30 flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm md:bottom-0 md:z-50 md:p-4"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl"
+        className="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-800 bg-slate-950 shadow-2xl md:max-h-[90vh]"
       >
         {/* Cabecera del perfil */}
         <div className="border-b border-slate-800 bg-gradient-to-r from-slate-900 via-slate-900 to-indigo-950/45 p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div className="flex items-center gap-4">
+              {currentUser && !esMiPerfil && (
+                <button
+                  type="button"
+                  onClick={() => setUsuarioActivoId(currentUser.id)}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-700 bg-slate-900 text-slate-300 transition hover:border-indigo-400 hover:bg-slate-800 hover:text-white"
+                  title="Volver a mi perfil"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+              )}
+
               <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-indigo-400/40 bg-indigo-600 text-2xl font-bold uppercase text-white shadow-lg shadow-indigo-600/30">
                 {(perfil?.username || 'U')[0]}
               </div>
@@ -822,7 +841,7 @@ export default function UserProfileModal({
                     return (
                       <div
                         key={am.id}
-                        onClick={() => cargarTodoPerfil()}
+                        onClick={() => setUsuarioActivoId(am.id)}
                         className="flex cursor-pointer items-center justify-between rounded-2xl border border-slate-800 bg-slate-900/70 p-3.5 transition hover:border-indigo-500/50"
                       >
                         <div className="flex items-center gap-3 truncate">
@@ -832,7 +851,7 @@ export default function UserProfileModal({
                           <div className="truncate">
                             <p className="truncate text-xs font-bold text-white">@{am.username}</p>
                             <p className="truncate text-[11px] text-slate-400">
-                              {am.bio || 'Amigo en PlotCorn'}
+                              {am.bio || 'Amigo en PlotVerse'}
                             </p>
                           </div>
                         </div>

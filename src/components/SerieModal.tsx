@@ -83,8 +83,8 @@ export default function SerieModal({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `${titulo} en PlotCorn`,
-          text: `Mira ${titulo} en PlotCorn`,
+          title: `${titulo} en PlotVerse`,
+          text: `Mira ${titulo} en PlotVerse`,
           url,
         });
         return;

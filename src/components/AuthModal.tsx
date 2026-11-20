@@ -69,7 +69,7 @@ export default function AuthModal({ onClose, onSuccess }: AuthModalProps) {
             <Popcorn className="h-7 w-7" />
           </div>
           <h2 className="text-xl font-bold tracking-tight text-white">
-            {isLogin ? 'Entra en PlotCorn' : 'Crea tu cuenta gratis'}
+            {isLogin ? 'Entra en PlotVerse' : 'Crea tu cuenta gratis'}
           </h2>
           <p className="mt-1 text-xs text-slate-400 sm:text-sm">
             Guarda tus series y películas en la nube, puntúa y conecta con la comunidad

@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PlotCorn",
+  title: "PlotVerse",
   description: "Toda historia tiene un Twist",
 };
 

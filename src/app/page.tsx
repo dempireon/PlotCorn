@@ -1142,12 +1142,12 @@ export default function Home() {
               className="flex cursor-pointer items-center gap-3"
             >
               <img
-                src="/logoplotcorn.jpeg"
+                src="/logoPlotVerse.jpeg"
                 alt="Logo"
                 className="h-10 w-10 rounded-xl border border-indigo-500/40 object-cover shadow-lg shadow-indigo-950/40"
               />
               <div>
-                <h1 className="text-xl font-bold tracking-tight text-white">PlotCorn</h1>
+                <h1 className="text-xl font-bold tracking-tight text-white">PlotVerse</h1>
                 <p className="text-xs text-slate-400">Toda historia tiene un Twist</p>
               </div>
             </div>
@@ -1774,7 +1774,7 @@ export default function Home() {
       </main>
 
       {/* Barra de navegación inferior fija para pantallas móviles */}
-      <nav className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-xl md:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around border-t border-slate-800 bg-slate-950/95 px-2 py-2 backdrop-blur-xl md:z-40 md:hidden">
         <button
           onClick={() => setVista('explorar')}
           className={`flex flex-col items-center gap-1 rounded-xl px-3.5 py-1.5 text-[11px] font-bold transition ${
