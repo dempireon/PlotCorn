@@ -252,6 +252,9 @@ export default function SerieModal({
       const totalVisto = Number(data.watch_count || siguienteCuenta);
       setHistorialFechas([data]);
 
+      // Avisa al instante a las estadísticas para que recarguen sin cambiar de pestaña
+      window.dispatchEvent(new CustomEvent('plotverse:fechas-actualizadas'));
+
       const extraActualizado: SeguimientoExtraModal = {
         started_at: data.started_date || estadoActual?.started_at || null,
         finished_at: data.finished_date || hoy,
@@ -369,6 +372,9 @@ export default function SerieModal({
     const totalVisto = Number(data.watch_count || siguienteCuenta);
     setHistorialFechas([data]);
 
+    // Avisa al instante a las estadísticas para que recarguen sin cambiar de pestaña
+    window.dispatchEvent(new CustomEvent('plotverse:fechas-actualizadas'));
+
     const extraActualizado: SeguimientoExtraModal = {
       started_at: data.started_date || null,
       finished_at: data.finished_date || null,
@@ -411,13 +417,14 @@ export default function SerieModal({
 
     setHistorialFechas((prev) => prev.filter((f) => f.id !== idFecha));
 
-    if (onUpdateSeguimiento) {
-      onUpdateSeguimiento({
-        started_at: null,
-        finished_at: null,
-        rewatch_count: 0,
-      });
-    }
+    // Avisa al instante a las estadísticas para que quiten la fecha y el conteo
+    window.dispatchEvent(new CustomEvent('plotverse:fechas-actualizadas'));
+
+    onUpdateSeguimiento?.({
+      started_at: null,
+      finished_at: null,
+      rewatch_count: 0,
+    });
   }
 
   async function compartirFicha() {

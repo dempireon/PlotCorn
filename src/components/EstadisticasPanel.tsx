@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl } from '@/lib/tmdb';
 import {
@@ -39,12 +39,14 @@ interface RegistroFechaEstadistica {
   started_date?: string | null;
   finished_date?: string | null;
   watched_date: string;
-  created_at?: string;
+  watch_count?: number | null;
+  updated_at?: string;
 }
 
 interface EstadisticasPanelProps {
   userId: string;
   itemsBiblioteca: ItemBiblioteca[];
+  refreshTrigger?: number;
 }
 
 function extraerNotaRegistro(obj: any): number {
@@ -96,6 +98,7 @@ function describirRegistroFecha(reg: RegistroFechaEstadistica): string {
 export default function EstadisticasPanel({
   userId,
   itemsBiblioteca,
+  refreshTrigger = 0,
 }: EstadisticasPanelProps) {
   const [episodiosBiblioteca, setEpisodiosBiblioteca] = useState<any[]>([]);
   const [historialFechas, setHistorialFechas] = useState<RegistroFechaEstadistica[]>([]);
@@ -116,39 +119,97 @@ export default function EstadisticasPanel({
     );
   }, [bibliotecaActiva]);
 
-  useEffect(() => {
-    async function cargarHistorialYFechas() {
-      if (!userId || idsBibliotecaSet.size === 0) {
-        setEpisodiosBiblioteca([]);
-        setHistorialFechas([]);
-        return;
-      }
-
-      const [{ data: epRows }, { data: fechasRows }] = await Promise.all([
-        supabase.from('watched_episodes').select('*').eq('user_id', userId),
-        supabase
-          .from('watch_history_dates')
-          .select('id, tmdb_id, media_type, started_date, finished_date, watched_date, created_at')
-          .eq('user_id', userId)
-          .order('created_at', { ascending: false }),
-      ]);
-
-      const filtradosEp = (epRows || []).filter((e: any) => {
-        const tmdbIdNum = Number(e.tmdb_id ?? e.series_id ?? e.media_id);
-        return !Number.isNaN(tmdbIdNum) && idsBibliotecaSet.has(tmdbIdNum);
-      });
-
-      const filtradasFechas = (fechasRows || []).filter((f: any) => {
-        const tmdbIdNum = Number(f.tmdb_id);
-        return !Number.isNaN(tmdbIdNum) && idsBibliotecaSet.has(tmdbIdNum);
-      });
-
-      setEpisodiosBiblioteca(filtradosEp);
-      setHistorialFechas(filtradasFechas);
+  const cargarHistorialYFechas = useCallback(async () => {
+    if (!userId || idsBibliotecaSet.size === 0) {
+      setEpisodiosBiblioteca([]);
+      setHistorialFechas([]);
+      return;
     }
 
-    cargarHistorialYFechas();
+    const [{ data: epRows }, { data: fechasRows }] = await Promise.all([
+      supabase.from('watched_episodes').select('*').eq('user_id', userId),
+      supabase
+        .from('watch_history_dates')
+        .select(
+          'id, tmdb_id, media_type, started_date, finished_date, watched_date, watch_count, updated_at'
+        )
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false }),
+    ]);
+
+    const filtradosEp = (epRows || []).filter((e: any) => {
+      const tmdbIdNum = Number(e.tmdb_id ?? e.series_id ?? e.media_id);
+      return !Number.isNaN(tmdbIdNum) && idsBibliotecaSet.has(tmdbIdNum);
+    });
+
+    const filtradasFechas = (fechasRows || []).filter((f: any) => {
+      const tmdbIdNum = Number(f.tmdb_id);
+      return !Number.isNaN(tmdbIdNum) && idsBibliotecaSet.has(tmdbIdNum);
+    });
+
+    setEpisodiosBiblioteca(filtradosEp);
+    setHistorialFechas(filtradasFechas);
   }, [userId, idsBibliotecaSet]);
+
+  useEffect(() => {
+    cargarHistorialYFechas();
+  }, [cargarHistorialYFechas, bibliotecaActiva, refreshTrigger]);
+
+  // Refresca al instante cuando se guarda o borra una fecha en SerieModal (evento + Realtime)
+  useEffect(() => {
+    if (!userId) return;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const refrescarEnSilencio = () => {
+      void cargarHistorialYFechas();
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        void cargarHistorialYFechas();
+      }, 250);
+    };
+
+    window.addEventListener('plotverse:fechas-actualizadas', refrescarEnSilencio);
+
+    const canalFechas = supabase
+      .channel(`estadisticas-fechas-${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'watch_history_dates',
+          filter: `user_id=eq.${userId}`,
+        },
+        refrescarEnSilencio
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'watch_history_dates',
+          filter: `user_id=eq.${userId}`,
+        },
+        refrescarEnSilencio
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'watch_history_dates',
+        },
+        refrescarEnSilencio
+      )
+      .subscribe();
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener('plotverse:fechas-actualizadas', refrescarEnSilencio);
+      void supabase.removeChannel(canalFechas);
+    };
+  }, [userId, cargarHistorialYFechas]);
 
   const totalEpisodiosVistos = episodiosBiblioteca.length;
 
@@ -163,12 +224,12 @@ export default function EstadisticasPanel({
   }, [historialFechas]);
 
   const totalVecesVistas = useMemo(() => {
-    if (historialFechas.length > 0) return historialFechas.length;
-    return bibliotecaActiva.reduce(
-      (acc, item) => acc + Math.max(0, Number(item.rewatch_count || 0)),
+    if (historialFechas.length === 0) return 0;
+    return historialFechas.reduce(
+      (acc, reg) => acc + Math.max(1, Number(reg.watch_count ?? 1)),
       0
     );
-  }, [historialFechas, bibliotecaActiva]);
+  }, [historialFechas]);
 
   const notasPorSerie = useMemo(() => {
     const agrupadas: Record<number, number[]> = {};
@@ -434,7 +495,6 @@ export default function EstadisticasPanel({
             </span>
           </div>
 
-          {/* Leyenda compacta y clara en móvil */}
           <div className="flex flex-wrap gap-2 rounded-xl border border-slate-800/80 bg-slate-900/60 p-2.5 text-[11px]">
             {barrasResumen.map((b) => (
               <span
@@ -451,7 +511,6 @@ export default function EstadisticasPanel({
             ))}
           </div>
 
-          {/* Gráfico de barras */}
           <div className="space-y-2.5">
             {barrasResumen.map((b) => (
               <div key={b.key} className="space-y-1">
@@ -478,7 +537,6 @@ export default function EstadisticasPanel({
           </div>
         </div>
 
-        {/* Gráfico de barras por estrellas */}
         <div className="flex flex-col justify-between space-y-4 rounded-2xl border border-slate-800/90 bg-slate-950/85 p-4 sm:p-5">
           <div>
             <div className="flex items-center justify-between">
@@ -628,8 +686,11 @@ export default function EstadisticasPanel({
                   const fechasItem = fechasPorClave[clave] || [];
                   const vecesItem =
                     fechasItem.length > 0
-                      ? fechasItem.length
-                      : Math.max(0, Number(item.rewatch_count || 0));
+                      ? fechasItem.reduce(
+                          (acc, f) => acc + Math.max(1, Number(f.watch_count ?? 1)),
+                          0
+                        )
+                      : 0;
 
                   const estadoConfig =
                     item.status === 'completed'

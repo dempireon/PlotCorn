@@ -1,14 +1,14 @@
 'use client';
 
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getPosterUrl, MediaTMDB, MediaType } from '@/lib/tmdb';
 import EditarPerfilModal from '@/components/EditarPerfilModal';
 import {
   UserPlus, UserCheck, MessageSquare, Send,
-  Star, Folder, Copy, Edit3, Save, Share2,
+  Star, Folder, Copy, Edit3, Save, Share2, Check,
   Users, BarChart3, ArrowLeft, Clock,
-  Camera, Wifi, Check
+  Camera, Wifi
 } from 'lucide-react';
 
 const TMDB_API_KEY = process.env.NEXT_PUBLIC_TMDB_API_KEY;
@@ -181,6 +181,7 @@ export default function UserProfileModal({
 
   const [seriesUsuario, setSeriesUsuario] = useState<any[]>([]);
   const [episodiosUsuario, setEpisodiosUsuario] = useState<any[]>([]);
+  const [fechasHistorial, setFechasHistorial] = useState<any[]>([]);
   const [resenasUsuario, setResenasUsuario] = useState<any[]>([]);
   const [coleccionesPublicas, setColeccionesPublicas] = useState<any[]>([]);
   const [seguidoresCount, setSeguidoresCount] = useState(0);
@@ -213,10 +214,367 @@ export default function UserProfileModal({
 
   const esMiPerfil = currentUser?.id === usuarioActivoId;
 
+  const cargarTodoPerfil = useCallback(
+    async (uid: string, silencioso = false) => {
+      if (!uid) return;
+      if (!silencioso) setCargando(true);
+
+      const { data: profData } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', uid)
+        .single();
+
+      setPerfil(profData || { id: uid, username: 'usuario', bio: '', avatar_url: null });
+      setBioEdit(profData?.bio || '');
+
+      const [{ data: uSeries }, { data: epRows }, { data: fechasRows }, { data: cRows }] =
+        await Promise.all([
+          supabase
+            .from('user_series')
+            .select('*')
+            .eq('user_id', uid)
+            .order('updated_at', { ascending: false }),
+          supabase
+            .from('watched_episodes')
+            .select('*')
+            .eq('user_id', uid),
+          supabase
+            .from('watch_history_dates')
+            .select('*')
+            .eq('user_id', uid),
+          supabase
+            .from('comments')
+            .select('*')
+            .eq('user_id', uid)
+            .order('created_at', { ascending: false })
+            .limit(6),
+        ]);
+
+      const ids = Array.from(
+        new Set((uSeries || []).map((u) => Number(u.tmdb_id)).filter(Boolean))
+      );
+      const idsSet = new Set(ids);
+
+      const episodiosFiltrados = (epRows || []).filter((e: any) => {
+        const tmdbIdNum = Number(e.tmdb_id ?? e.series_id ?? e.media_id);
+        return !Number.isNaN(tmdbIdNum) && idsSet.has(tmdbIdNum);
+      });
+      setEpisodiosUsuario(episodiosFiltrados);
+
+      const fechasFiltradas = (fechasRows || []).filter((f: any) => {
+        const tmdbIdNum = Number(f.tmdb_id);
+        return !Number.isNaN(tmdbIdNum) && idsSet.has(tmdbIdNum);
+      });
+      setFechasHistorial(fechasFiltradas);
+
+      const cacheMap: Record<string, any> = {};
+      if (ids.length > 0) {
+        const { data: cData } = await supabase
+          .from('series_cache')
+          .select('*')
+          .in('tmdb_id', ids);
+        (cData || []).forEach((c: any) => {
+          cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
+        });
+      }
+
+      const combinadosBase = (uSeries || []).map((u: any) => {
+        const tipo = (u.media_type || 'tv') as MediaType;
+        const clave = `${tipo}-${u.tmdb_id}`;
+        const cached = cacheMap[clave];
+        return {
+          ...u,
+          media_type: tipo,
+          title: cached?.title || 'Título',
+          poster_path: cached?.poster_path || null,
+          genres: cached?.genres || cached?.genre || cached?.category || u.genres || u.genre || null,
+          genre_ids: cached?.genre_ids || u.genre_ids || null,
+        };
+      });
+
+      const combinadosEnriquecidos = await Promise.all(
+        combinadosBase.map(async (item) => {
+          const formatoResuelto = await resolverFormatoConTMDB(
+            Number(item.tmdb_id),
+            item.media_type,
+            item
+          );
+          return {
+            ...item,
+            formato_resuelto: formatoResuelto,
+          };
+        })
+      );
+
+      setSeriesUsuario(combinadosEnriquecidos);
+
+      const reviewIds = Array.from(
+        new Set((cRows || []).map((r: any) => Number(r.tmdb_id)).filter(Boolean))
+      );
+      const missingReviewIds = reviewIds.filter((rid) => !idsSet.has(rid));
+      if (missingReviewIds.length > 0) {
+        const { data: extraCache } = await supabase
+          .from('series_cache')
+          .select('*')
+          .in('tmdb_id', missingReviewIds);
+        (extraCache || []).forEach((c: any) => {
+          cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
+        });
+      }
+
+      setResenasUsuario(
+        (cRows || []).map((r: any) => {
+          const tipo = (r.media_type || 'tv') as MediaType;
+          const clave = `${tipo}-${r.tmdb_id}`;
+          const cached = cacheMap[clave];
+          return {
+            ...r,
+            media_type: tipo,
+            mediaTitle: cached?.title || null,
+            poster_path: cached?.poster_path || null,
+          };
+        })
+      );
+
+      const { data: cols } = await supabase
+        .from('user_collections')
+        .select('*')
+        .eq('user_id', uid)
+        .eq('is_public', true)
+        .order('created_at', { ascending: false });
+
+      if (cols && cols.length > 0) {
+        const colIds = cols.map((c) => c.id);
+        const { data: cItems } = await supabase
+          .from('collection_items')
+          .select('*')
+          .in('collection_id', colIds);
+
+        const itemIds = Array.from(new Set((cItems || []).map((ci) => ci.tmdb_id)));
+        if (itemIds.length > 0) {
+          const { data: cCache } = await supabase
+            .from('series_cache')
+            .select('*')
+            .in('tmdb_id', itemIds);
+          (cCache || []).forEach((c: any) => {
+            cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
+          });
+        }
+
+        setColeccionesPublicas(
+          cols.map((col: any) => ({
+            ...col,
+            items: (cItems || [])
+              .filter((ci) => ci.collection_id === col.id)
+              .map((ci) => {
+                const clave = `${ci.media_type || 'tv'}-${ci.tmdb_id}`;
+                const cached = cacheMap[clave];
+                return {
+                  tmdb_id: ci.tmdb_id,
+                  media_type: (ci.media_type || 'tv') as MediaType,
+                  title: cached?.title || 'Título',
+                  poster_path: cached?.poster_path || null,
+                };
+              }),
+          }))
+        );
+      } else {
+        setColeccionesPublicas([]);
+      }
+
+      const { count: segCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('following_id', uid);
+      setSeguidoresCount(segCount || 0);
+
+      const { count: sigCount } = await supabase
+        .from('follows')
+        .select('*', { count: 'exact', head: true })
+        .eq('follower_id', uid);
+      setSiguiendoCount(sigCount || 0);
+
+      const esPerfilPropio = currentUser?.id === uid;
+
+      if (currentUser && esPerfilPropio) {
+        const { data: fRows } = await supabase
+          .from('friendships')
+          .select('*')
+          .or(`requester_id.eq.${currentUser.id},addressee_id.eq.${currentUser.id}`);
+
+        const entrantes = (fRows || []).filter(
+          (f) => f.status === 'pending' && f.addressee_id === currentUser.id
+        );
+        const aceptadas = (fRows || []).filter((f) => f.status === 'accepted');
+
+        const todosIds = Array.from(
+          new Set([
+            ...entrantes.map((e) => e.requester_id),
+            ...aceptadas.map((a) =>
+              a.requester_id === currentUser.id ? a.addressee_id : a.requester_id
+            ),
+          ])
+        );
+
+        const perfilesSociales: Record<string, any> = {};
+        if (todosIds.length > 0) {
+          const { data: profs } = await supabase
+            .from('profiles')
+            .select('id, username, bio, avatar_url')
+            .in('id', todosIds);
+          (profs || []).forEach((p: any) => {
+            perfilesSociales[p.id] = p;
+          });
+        }
+
+        setMisSolicitudes(
+          entrantes.map((e) => ({
+            ...e,
+            sender: perfilesSociales[e.requester_id] || {
+              id: e.requester_id,
+              username: 'usuario',
+            },
+          }))
+        );
+
+        setMisAmigos(
+          aceptadas.map((a) => {
+            const friendId =
+              a.requester_id === currentUser.id ? a.addressee_id : a.requester_id;
+            return {
+              friendshipId: a.id,
+              ...(perfilesSociales[friendId] || { id: friendId, username: 'usuario' }),
+            };
+          })
+        );
+
+        const { data: unread } = await supabase
+          .from('direct_messages')
+          .select('sender_id')
+          .eq('receiver_id', currentUser.id)
+          .eq('read', false);
+
+        const conteo: Record<string, number> = {};
+        (unread || []).forEach((m: any) => {
+          conteo[m.sender_id] = (conteo[m.sender_id] || 0) + 1;
+        });
+        setMensajesNoLeidos(conteo);
+      } else if (currentUser && !esPerfilPropio) {
+        setMisSolicitudes([]);
+        setMisAmigos([]);
+        setMensajesNoLeidos({});
+
+        const { data: followRow } = await supabase
+          .from('follows')
+          .select('*')
+          .eq('follower_id', currentUser.id)
+          .eq('following_id', uid)
+          .maybeSingle();
+        setLoSigo(!!followRow);
+
+        const { data: friendRow } = await supabase
+          .from('friendships')
+          .select('*')
+          .or(
+            `and(requester_id.eq.${currentUser.id},addressee_id.eq.${uid}),and(requester_id.eq.${uid},addressee_id.eq.${currentUser.id})`
+          )
+          .maybeSingle();
+
+        if (!friendRow) {
+          setEstadoAmistad('none');
+          setFriendshipId(null);
+        } else {
+          setFriendshipId(friendRow.id);
+          if (friendRow.status === 'accepted') {
+            setEstadoAmistad('friends');
+          } else if (friendRow.requester_id === currentUser.id) {
+            setEstadoAmistad('sent');
+          } else {
+            setEstadoAmistad('received');
+          }
+        }
+      }
+
+      if (!silencioso) setCargando(false);
+    },
+    [currentUser]
+  );
+
+  // Carga inicial al cambiar de usuario
   useEffect(() => {
     setTabPerfil('estadisticas');
-    cargarTodoPerfil(usuarioActivoId);
-  }, [usuarioActivoId, currentUser?.id]);
+    cargarTodoPerfil(usuarioActivoId, false);
+  }, [usuarioActivoId, currentUser?.id, cargarTodoPerfil]);
+
+  // Refresco automático al guardar/borrar fechas en la ficha (evento en window + Supabase Realtime)
+  useEffect(() => {
+    if (!usuarioActivoId) return;
+
+    const refrescarEnSilencio = () => {
+      void cargarTodoPerfil(usuarioActivoId, true);
+    };
+
+    window.addEventListener('plotverse:fechas-actualizadas', refrescarEnSilencio);
+
+    const canalFechas = supabase
+      .channel(`perfil-fechas-sync-${usuarioActivoId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'watch_history_dates',
+          filter: `user_id=eq.${usuarioActivoId}`,
+        },
+        refrescarEnSilencio
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'watch_history_dates',
+          filter: `user_id=eq.${usuarioActivoId}`,
+        },
+        refrescarEnSilencio
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'watch_history_dates',
+        },
+        refrescarEnSilencio
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('plotverse:fechas-actualizadas', refrescarEnSilencio);
+      void supabase.removeChannel(canalFechas);
+    };
+  }, [usuarioActivoId, cargarTodoPerfil]);
+
+  // Refresca en silencio cada vez que se entra/vuelve a la pestaña de estadísticas o vuelve la ventana/foco
+  useEffect(() => {
+    if (tabPerfil !== 'estadisticas' || !usuarioActivoId) return;
+
+    cargarTodoPerfil(usuarioActivoId, true);
+
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') {
+        cargarTodoPerfil(usuarioActivoId, true);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
+    };
+  }, [tabPerfil, usuarioActivoId, cargarTodoPerfil]);
 
   // Presencia global en vivo para saber quién está conectado en amigos
   useEffect(() => {
@@ -290,276 +648,6 @@ export default function UserProfileModal({
     setTimeout(() => setPerfilCopiado(false), 2500);
   }
 
-  async function cargarTodoPerfil(uid: string) {
-    setCargando(true);
-
-    const { data: profData } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', uid)
-      .single();
-
-    setPerfil(profData || { id: uid, username: 'usuario', bio: '', avatar_url: null });
-    setBioEdit(profData?.bio || '');
-
-    const [{ data: uSeries }, { data: epRows }, { data: cRows }] = await Promise.all([
-      supabase
-        .from('user_series')
-        .select('*')
-        .eq('user_id', uid)
-        .order('updated_at', { ascending: false }),
-      supabase
-        .from('watched_episodes')
-        .select('*')
-        .eq('user_id', uid),
-      supabase
-        .from('comments')
-        .select('*')
-        .eq('user_id', uid)
-        .order('created_at', { ascending: false })
-        .limit(6),
-    ]);
-
-    const ids = Array.from(new Set((uSeries || []).map((u) => Number(u.tmdb_id)).filter(Boolean)));
-    const idsSet = new Set(ids);
-
-    const episodiosFiltrados = (epRows || []).filter((e: any) => {
-      const tmdbIdNum = Number(e.tmdb_id ?? e.series_id ?? e.media_id);
-      return !Number.isNaN(tmdbIdNum) && idsSet.has(tmdbIdNum);
-    });
-    setEpisodiosUsuario(episodiosFiltrados);
-
-    const cacheMap: Record<string, any> = {};
-    if (ids.length > 0) {
-      const { data: cData } = await supabase
-        .from('series_cache')
-        .select('*')
-        .in('tmdb_id', ids);
-      (cData || []).forEach((c: any) => {
-        cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
-      });
-    }
-
-    const combinadosBase = (uSeries || []).map((u: any) => {
-      const tipo = (u.media_type || 'tv') as MediaType;
-      const clave = `${tipo}-${u.tmdb_id}`;
-      const cached = cacheMap[clave];
-      return {
-        ...u,
-        media_type: tipo,
-        title: cached?.title || 'Título',
-        poster_path: cached?.poster_path || null,
-        genres: cached?.genres || cached?.genre || cached?.category || u.genres || u.genre || null,
-        genre_ids: cached?.genre_ids || u.genre_ids || null,
-      };
-    });
-
-    const combinadosEnriquecidos = await Promise.all(
-      combinadosBase.map(async (item) => {
-        const formatoResuelto = await resolverFormatoConTMDB(
-          Number(item.tmdb_id),
-          item.media_type,
-          item
-        );
-        return {
-          ...item,
-          formato_resuelto: formatoResuelto,
-        };
-      })
-    );
-
-    setSeriesUsuario(combinadosEnriquecidos);
-
-    const reviewIds = Array.from(
-      new Set((cRows || []).map((r: any) => Number(r.tmdb_id)).filter(Boolean))
-    );
-    const missingReviewIds = reviewIds.filter((rid) => !idsSet.has(rid));
-    if (missingReviewIds.length > 0) {
-      const { data: extraCache } = await supabase
-        .from('series_cache')
-        .select('*')
-        .in('tmdb_id', missingReviewIds);
-      (extraCache || []).forEach((c: any) => {
-        cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
-      });
-    }
-
-    setResenasUsuario(
-      (cRows || []).map((r: any) => {
-        const tipo = (r.media_type || 'tv') as MediaType;
-        const clave = `${tipo}-${r.tmdb_id}`;
-        const cached = cacheMap[clave];
-        return {
-          ...r,
-          media_type: tipo,
-          mediaTitle: cached?.title || null,
-          poster_path: cached?.poster_path || null,
-        };
-      })
-    );
-
-    const { data: cols } = await supabase
-      .from('user_collections')
-      .select('*')
-      .eq('user_id', uid)
-      .eq('is_public', true)
-      .order('created_at', { ascending: false });
-
-    if (cols && cols.length > 0) {
-      const colIds = cols.map((c) => c.id);
-      const { data: cItems } = await supabase
-        .from('collection_items')
-        .select('*')
-        .in('collection_id', colIds);
-
-      const itemIds = Array.from(new Set((cItems || []).map((ci) => ci.tmdb_id)));
-      if (itemIds.length > 0) {
-        const { data: cCache } = await supabase
-          .from('series_cache')
-          .select('*')
-          .in('tmdb_id', itemIds);
-        (cCache || []).forEach((c: any) => {
-          cacheMap[`${c.media_type || 'tv'}-${c.tmdb_id}`] = c;
-        });
-      }
-
-      setColeccionesPublicas(
-        cols.map((col: any) => ({
-          ...col,
-          items: (cItems || [])
-            .filter((ci) => ci.collection_id === col.id)
-            .map((ci) => {
-              const clave = `${ci.media_type || 'tv'}-${ci.tmdb_id}`;
-              const cached = cacheMap[clave];
-              return {
-                tmdb_id: ci.tmdb_id,
-                media_type: (ci.media_type || 'tv') as MediaType,
-                title: cached?.title || 'Título',
-                poster_path: cached?.poster_path || null,
-              };
-            }),
-        }))
-      );
-    } else {
-      setColeccionesPublicas([]);
-    }
-
-    const { count: segCount } = await supabase
-      .from('follows')
-      .select('*', { count: 'exact', head: true })
-      .eq('following_id', uid);
-    setSeguidoresCount(segCount || 0);
-
-    const { count: sigCount } = await supabase
-      .from('follows')
-      .select('*', { count: 'exact', head: true })
-      .eq('follower_id', uid);
-    setSiguiendoCount(sigCount || 0);
-
-    const esPerfilPropio = currentUser?.id === uid;
-
-    if (currentUser && esPerfilPropio) {
-      const { data: fRows } = await supabase
-        .from('friendships')
-        .select('*')
-        .or(`requester_id.eq.${currentUser.id},addressee_id.eq.${currentUser.id}`);
-
-      const entrantes = (fRows || []).filter(
-        (f) => f.status === 'pending' && f.addressee_id === currentUser.id
-      );
-      const aceptadas = (fRows || []).filter((f) => f.status === 'accepted');
-
-      const todosIds = Array.from(
-        new Set([
-          ...entrantes.map((e) => e.requester_id),
-          ...aceptadas.map((a) =>
-            a.requester_id === currentUser.id ? a.addressee_id : a.requester_id
-          ),
-        ])
-      );
-
-      const perfilesSociales: Record<string, any> = {};
-      if (todosIds.length > 0) {
-        const { data: profs } = await supabase
-          .from('profiles')
-          .select('id, username, bio, avatar_url')
-          .in('id', todosIds);
-        (profs || []).forEach((p: any) => {
-          perfilesSociales[p.id] = p;
-        });
-      }
-
-      setMisSolicitudes(
-        entrantes.map((e) => ({
-          ...e,
-          sender: perfilesSociales[e.requester_id] || {
-            id: e.requester_id,
-            username: 'usuario',
-          },
-        }))
-      );
-
-      setMisAmigos(
-        aceptadas.map((a) => {
-          const friendId =
-            a.requester_id === currentUser.id ? a.addressee_id : a.requester_id;
-          return {
-            friendshipId: a.id,
-            ...(perfilesSociales[friendId] || { id: friendId, username: 'usuario' }),
-          };
-        })
-      );
-
-      const { data: unread } = await supabase
-        .from('direct_messages')
-        .select('sender_id')
-        .eq('receiver_id', currentUser.id)
-        .eq('read', false);
-
-      const conteo: Record<string, number> = {};
-      (unread || []).forEach((m: any) => {
-        conteo[m.sender_id] = (conteo[m.sender_id] || 0) + 1;
-      });
-      setMensajesNoLeidos(conteo);
-    } else if (currentUser && !esPerfilPropio) {
-      setMisSolicitudes([]);
-      setMisAmigos([]);
-      setMensajesNoLeidos({});
-
-      const { data: followRow } = await supabase
-        .from('follows')
-        .select('*')
-        .eq('follower_id', currentUser.id)
-        .eq('following_id', uid)
-        .maybeSingle();
-      setLoSigo(!!followRow);
-
-      const { data: friendRow } = await supabase
-        .from('friendships')
-        .select('*')
-        .or(
-          `and(requester_id.eq.${currentUser.id},addressee_id.eq.${uid}),and(requester_id.eq.${uid},addressee_id.eq.${currentUser.id})`
-        )
-        .maybeSingle();
-
-      if (!friendRow) {
-        setEstadoAmistad('none');
-        setFriendshipId(null);
-      } else {
-        setFriendshipId(friendRow.id);
-        if (friendRow.status === 'accepted') {
-          setEstadoAmistad('friends');
-        } else if (friendRow.requester_id === currentUser.id) {
-          setEstadoAmistad('sent');
-        } else {
-          setEstadoAmistad('received');
-        }
-      }
-    }
-
-    setCargando(false);
-  }
-
   async function responderSolicitudPropia(idSolicitud: string, aceptar: boolean) {
     if (aceptar) {
       await supabase
@@ -569,7 +657,7 @@ export default function UserProfileModal({
     } else {
       await supabase.from('friendships').delete().eq('id', idSolicitud);
     }
-    cargarTodoPerfil(usuarioActivoId);
+    cargarTodoPerfil(usuarioActivoId, false);
   }
 
   async function toggleSeguir() {
@@ -745,13 +833,29 @@ export default function UserProfileModal({
   const pendientesCount = seriesUsuario.filter((s) => s.status === 'watchlist').length;
   const abandonadosCount = seriesUsuario.filter((s) => s.status === 'dropped').length;
 
+  const fechasPorClave = useMemo(() => {
+    const mapa: Record<string, any[]> = {};
+    fechasHistorial.forEach((f: any) => {
+      const clave = `${f.media_type || 'tv'}-${f.tmdb_id}`;
+      if (!mapa[clave]) mapa[clave] = [];
+      mapa[clave].push(f);
+    });
+    return mapa;
+  }, [fechasHistorial]);
+
   const totalVisionados = useMemo(() => {
+    if (fechasHistorial.length > 0) {
+      return fechasHistorial.reduce(
+        (acc: number, f: any) => acc + Math.max(1, Number(f.watch_count ?? 1)),
+        0
+      );
+    }
     return seriesUsuario.reduce((acc, item) => {
       const veces = Number(item?.rewatch_count || 0);
       if (veces > 0) return acc + veces;
       return acc + (item?.status === 'completed' ? 1 : 0);
     }, 0);
-  }, [seriesUsuario]);
+  }, [fechasHistorial, seriesUsuario]);
 
   const notasDeEpisodiosPuntuados = useMemo(() => {
     if (totalTitulos === 0) return [];
@@ -876,7 +980,9 @@ export default function UserProfileModal({
 
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-xl font-bold text-white">{perfil?.username || 'usuario'}</h2>
+                <h2 className="text-xl font-bold text-white">
+                  {(perfil?.username || 'usuario').replace(/^@+/, '')}
+                </h2>
                 {perfilEstaConectado && (
                   <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
@@ -1072,7 +1178,10 @@ export default function UserProfileModal({
         <div className="mt-5 flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => setTabPerfil('estadisticas')}
+            onClick={() => {
+              setTabPerfil('estadisticas');
+              cargarTodoPerfil(usuarioActivoId, true);
+            }}
             className={`flex items-center gap-1.5 rounded-xl border px-4 py-1.5 text-xs font-bold transition ${tabPerfil === 'estadisticas'
               ? 'border-indigo-400/60 bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
               : 'border-slate-800 bg-slate-950/80 text-slate-300 hover:border-slate-700 hover:text-white'
@@ -1169,7 +1278,7 @@ export default function UserProfileModal({
                         onClick={() => setUsuarioActivoId(sol.sender.id)}
                         className="text-xs font-bold text-indigo-300 hover:underline"
                       >
-                        @{sol.sender.username}
+                        @{(sol.sender.username || 'usuario').replace(/^@+/, '')}
                       </button>
                       <div className="flex gap-1.5">
                         <button
@@ -1233,7 +1342,9 @@ export default function UserProfileModal({
                           />
                         </div>
                         <div className="truncate">
-                          <p className="truncate text-xs font-bold text-white">@{am.username}</p>
+                          <p className="truncate text-xs font-bold text-white">
+                            {(am.username || 'amigo').replace(/^@+/, '')}
+                          </p>
                           <p className="truncate text-[11px] text-slate-400">
                             {estaOnline ? 'Conectado ahora' : am.bio || 'Amigo en PlotVerse'}
                           </p>
@@ -1256,7 +1367,7 @@ export default function UserProfileModal({
             <div className="flex-1 space-y-3 overflow-y-auto pr-1">
               {mensajes.length === 0 ? (
                 <p className="py-16 text-center text-xs text-slate-500">
-                  Inicia la conversación con @{perfil?.username}. ¡Recomiéndale una serie!
+                  Inicia la conversación con {(perfil?.username || 'usuario').replace(/^@+/, '')}. ¡Recomiéndale una serie!
                 </p>
               ) : (
                 mensajes.map((m) => {
@@ -1292,7 +1403,7 @@ export default function UserProfileModal({
                 type="text"
                 value={nuevoMensaje}
                 onChange={(e) => setNuevoMensaje(e.target.value)}
-                placeholder={`Escribe un mensaje a @${perfil?.username}...`}
+                placeholder={`Escribe un mensaje a ${(perfil?.username || 'usuario').replace(/^@+/, '')}...`}
                 className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs text-white placeholder-slate-500 transition focus:border-indigo-400 focus:outline-none"
               />
               <button
@@ -1425,7 +1536,6 @@ export default function UserProfileModal({
                   </span>
                 </div>
 
-                {/* Donut de formato + leyenda compacta */}
                 <div className="flex items-center gap-4">
                   <div className="relative h-24 w-24 shrink-0">
                     <svg viewBox="0 0 76 76" className="h-full w-full -rotate-90">
@@ -1488,7 +1598,6 @@ export default function UserProfileModal({
                   </div>
                 </div>
 
-                {/* Barras finas redondeadas de estado (solo número a la derecha) */}
                 <div className="space-y-2 border-t border-slate-800/80 pt-3">
                   {barrasEstado.map((est) => {
                     const val = Math.max(0, est.value);
@@ -1584,9 +1693,22 @@ export default function UserProfileModal({
                             ? 'Película'
                             : 'Serie';
 
-                    const veces = Number(item?.rewatch_count ?? 0);
-                    const inicioFormateado = formatearFechaES(item.started_at);
-                    const finFormateado = formatearFechaES(item.finished_at);
+                    const clave = `${item.media_type}-${item.tmdb_id}`;
+                    const regsFecha = fechasPorClave[clave] || [];
+                    const veces =
+                      regsFecha.length > 0
+                        ? regsFecha.reduce(
+                            (acc: number, r: any) => acc + Math.max(1, Number(r.watch_count ?? 1)),
+                            0
+                          )
+                        : Number(item?.rewatch_count ?? 0);
+
+                    const primerReg = regsFecha[0];
+                    const inicioStr = primerReg?.started_date || item.started_at;
+                    const finStr = primerReg?.finished_date || primerReg?.watched_date || item.finished_at;
+
+                    const inicioFormateado = formatearFechaES(inicioStr);
+                    const finFormateado = formatearFechaES(finStr);
                     const textoFechas = [
                       inicioFormateado ? `Inicio: ${inicioFormateado}` : null,
                       finFormateado
@@ -1694,9 +1816,10 @@ export default function UserProfileModal({
           currentAvatarUrl={perfil?.avatar_url || null}
           onClose={() => setMostrarEditarPerfil(false)}
           onSaved={(nuevoNick, nuevaFoto) => {
+            const nickLimpio = String(nuevoNick || '').trim().replace(/^@+/, '');
             setPerfil((prev: any) => ({
               ...prev,
-              username: nuevoNick,
+              username: nickLimpio,
               avatar_url: nuevaFoto,
             }));
             onNotify?.('Perfil actualizado');
